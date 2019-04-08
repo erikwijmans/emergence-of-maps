@@ -1,0 +1,3 @@
+[submodule "habitat-api-navigation-analysis"]
+	path = habitat-api-navigation-analysis
+	url = git@github.com:fairinternal/habitat-api-navigation-analysis.git
