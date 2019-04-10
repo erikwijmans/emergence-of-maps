@@ -407,7 +407,7 @@ def ppo_args():
         default="DENSE",
         choices=["DENSE", "SPARSE"],
     )
-    parser.add_argument("--use-aux-losses", type=int, default=1)
+    parser.add_argument("--use-aux-losses", type=int, default=0)
     parser.add_argument("--rnn-type", type=str, default="GRU", choices=["LSTM", "GRU", "LN-LSTM"])
     parser.add_argument("--env-name", type=str, default=None)
     parser.add_argument("--noise-truncate", type=float, default=0.0)

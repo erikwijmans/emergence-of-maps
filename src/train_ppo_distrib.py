@@ -278,7 +278,7 @@ def main():
 
                     episode_spls += torch.tensor(
                         [
-                            [info["spl"]["spl"]] if done else [0.0]
+                            [info["spl"]] if done else [0.0]
                             for info, done in zip(infos, dones)
                         ],
                         dtype=torch.float,
@@ -286,7 +286,7 @@ def main():
                     )
                     episode_successes += torch.tensor(
                         [
-                            [info["spl"]["success"]] if done else [0.0]
+                            [1.0] if done and info["spl"] > 0 else [0.0]
                             for info, done in zip(infos, dones)
                         ],
                         dtype=torch.float,

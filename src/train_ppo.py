@@ -154,7 +154,6 @@ def construct_envs(args):
             ]
 
         config_env.SIMULATOR.HABITAT_SIM_V0.GPU_DEVICE_ID = args.sim_gpu_id
-        config_env.SIMULATOR.NOISE_TRUNCATE = args.noise_truncate
         config_env.TASK.POINTGOAL_SENSOR.SENSOR_TYPE = args.pointgoal_sensor_type
 
         agent_sensors = [s for s in args.sensors.strip().split(",") if len(s) > 0]
