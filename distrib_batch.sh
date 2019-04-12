@@ -1,23 +1,41 @@
 #!/bin/bash
-#SBATCH -J pointnav_gibson
-#SBATCH -o logs/pointnav_gibson_depth.log
+#SBATCH --job-name=navigation-analysis-habitat
+#SBATCH --output=/checkpoint/akadian/jobs/job.%j.out
+#SBATCH --error=/checkpoint/akadian/jobs/job.%j.err
 #SBATCH --gres gpu:8
-#SBATCH --nodes 8
+#SBATCH --nodes 2
 #SBATCH --cpus-per-task 10
 #SBATCH --ntasks-per-node 8
 #SBATCH --mem=400GB
-#SBATCH --partition=learnfair
-#SBATCH --time=72:00:00
+#SBATCH --partition=dev
+#SBATCH --time=24:00:00
 #SBATCH --signal=USR1@600
 #SBATCH --open-mode=append
 
-CHECKPOINT="data/checkpoints/gibson_depth_1k"
+# conda setup
+if [ ${USER} == "akadian" ]
+then
+    echo "Using setup for Abhishek"
+    source activate navigation-analysis
+    BASE_EXP_DIR="/checkpoint/akadian/exp-dir"
+    CHECKPOINT="${BASE_EXP_DIR}/checkpoints"
+    mkdir -p ${CHECKPOINT}
+elif [${USER} == "erikwijmans"]
+then
+    echo "Using setup for Erik"
+    . /private/home/erikwijmans/miniconda3/etc/profile.d/conda.sh
+    conda deactivate
+    conda activate hsim
+    BASE_EXP_DIR="/checkpoint/erikwijmans/exp-dir"
+    CHECKPOINT="data/checkpoints/gibson_depth_1k"
+fi
+
 ENV_NAME="pointnav_gibson_depth"
 SENSORS="DEPTH_SENSOR"
 PG_SENSOR_TYPE="DENSE"
 BLIND=0
 RNN_TYPE="LSTM"
-
+CURRENT_DATETIME="`date +%Y_%m_%d_%H_%M_%S`";
 
 module purge
 module load cuda/10.0
@@ -29,9 +47,8 @@ export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu/nvidia-opengl:${LD_LIBRARY_PATH
 export GLOG_minloglevel=2
 export MAGNUM_LOG=quiet
 
-. /private/home/erikwijmans/miniconda3/etc/profile.d/conda.sh
-conda deactivate
-conda activate hsim
+EXP_DIR="${BASE_EXP_DIR}/exp.habitat_api_navigation_analysis.datetime_${CURRENT_DATETIME}"
+mkdir -p ${EXP_DIR}
 
 export MASTER_ADDR=$(srun --ntasks=1 hostname 2>&1 | tail -n1)
 set -x
@@ -51,7 +68,7 @@ srun python -u src/train_ppo_distrib.py \
     --use-linear-lr-decay \
     --use-linear-clip-decay \
     --entropy-coef 0.01 \
-    --log-file "train.log" \
+    --log-file "${EXP_DIR}/train.log" \
     --log-interval 50 \
     --checkpoint-folder ${CHECKPOINT} \
     --checkpoint-interval 500 \
