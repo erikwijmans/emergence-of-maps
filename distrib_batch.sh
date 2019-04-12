@@ -3,11 +3,11 @@
 #SBATCH --output=/checkpoint/akadian/jobs/job.%j.out
 #SBATCH --error=/checkpoint/akadian/jobs/job.%j.err
 #SBATCH --gres gpu:8
-#SBATCH --nodes 2
+#SBATCH --nodes 1
 #SBATCH --cpus-per-task 10
 #SBATCH --ntasks-per-node 8
 #SBATCH --mem=400GB
-#SBATCH --partition=dev
+#SBATCH --partition=learnfair
 #SBATCH --time=24:00:00
 #SBATCH --signal=USR1@600
 #SBATCH --open-mode=append

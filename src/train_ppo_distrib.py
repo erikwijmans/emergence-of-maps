@@ -395,13 +395,13 @@ def main():
                         _save_state()
 
                         logger.info(
-                            "update: {}\tfps: {:.3f}\t".format(
+                            "update: {}\tfps: {:.3f}".format(
                                 update, count_steps / ((time() - t_start) + prev_time)
                             )
                         )
 
                         logger.info(
-                            "update: {}\tenv-time: {:.3f}s\tpth-time: {:.3f}s\t"
+                            "update: {}\tenv-time: {:.3f}s\tpth-time: {:.3f}s"
                             "frames: {}".format(update, env_time, pth_time, count_steps)
                         )
 
