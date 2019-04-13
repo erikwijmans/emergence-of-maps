@@ -1,9 +1,9 @@
 #!/bin/bash
 #SBATCH --job-name=navigation-analysis-habitat
-#SBATCH --output=/checkpoint/akadian/jobs/job.%j.out
-#SBATCH --error=/checkpoint/akadian/jobs/job.%j.err
+#SBATCH --output=/checkpoint/%u/jobs/job.%j.out
+#SBATCH --error=/checkpoint/%u/jobs/job.%j.err
 #SBATCH --gres gpu:8
-#SBATCH --nodes 1
+#SBATCH --nodes 4
 #SBATCH --cpus-per-task 10
 #SBATCH --ntasks-per-node 8
 #SBATCH --mem=400GB
