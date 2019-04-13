@@ -69,7 +69,7 @@ class NavRLEnv(habitat.RLEnv):
         if self._episode_success():
             reward += (
                 self._config_baseline.BASELINE.RL.SUCCESS_REWARD
-                * self.get_info(observations)["spl"]["spl"]
+                * self.get_info(observations)["spl"]
             )
 
         return reward
