@@ -438,6 +438,11 @@ def ppo_args():
         default="DENSE",
         choices=["DENSE", "SPARSE"],
     )
+    parser.add_argument(
+        "--pointgoal-sensor-dimensions",
+        type=int,
+        choices=[2, 3]
+    )
     parser.add_argument("--use-aux-losses", type=int, default=0)
     parser.add_argument(
         "--rnn-type",

@@ -161,6 +161,9 @@ def construct_envs(args):
         config_env.TASK.POINTGOAL_SENSOR.SENSOR_TYPE = (
             args.pointgoal_sensor_type
         )
+        config_env.TASK.POINTGOAL_SENSOR.SENSOR_DIMENSIONS = (
+            args.pointgoal_sensor_dimensions
+        )
 
         agent_sensors = [
             s for s in args.sensors.strip().split(",") if len(s) > 0
@@ -182,7 +185,7 @@ def construct_envs(args):
         config_baseline = cfg_baseline()
         baseline_configs.append(config_baseline)
 
-        logger.debug("config_env: {}".format(config_env))
+        logger.info("config_env: {}".format(config_env))
 
     envs = habitat.VectorEnv(
         make_env_fn=make_env_fn,
@@ -215,7 +218,7 @@ def main():
         os.makedirs(args.checkpoint_folder)
 
     for p in sorted(list(vars(args))):
-        logger.debug("{}: {}".format(p, getattr(args, p)))
+        logger.info("{}: {}".format(p, getattr(args, p)))
 
     envs = construct_envs(args)
 

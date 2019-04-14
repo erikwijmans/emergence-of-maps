@@ -191,6 +191,8 @@ def main():
         config_env.TASK.POINTGOAL_SENSOR.SENSOR_TYPE = (
             args.pointgoal_sensor_type
         )
+        config_env.TASK.POINTGOAL_SENSOR.SENSOR_DIMENSIONS = 2
+
         if args.record_video and "RGB_SENSOR" not in agent_sensors:
             agent_sensors.append("RGB_SENSOR")
         config_env.SIMULATOR.AGENT_0.SENSORS = agent_sensors

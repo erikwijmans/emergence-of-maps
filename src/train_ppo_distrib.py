@@ -8,19 +8,13 @@ import os
 from time import time, sleep
 from collections import deque
 import random
-import numpy as np
 
 import torch
-import habitat
 from habitat import logger
-from habitat.sims.habitat_simulator import SimulatorActions, SIM_NAME_TO_ACTION
-from habitat.config.default import get_config as cfg_env
-from habitat.datasets.pointnav.pointnav_dataset import PointNavDatasetV1
-from src.config.default import cfg as cfg_baseline
 from src.rl.ppo import PPO, Policy, RolloutStorage
 from src.rl.ppo.utils import update_linear_schedule, ppo_args, batch_obs
 import torch.distributed as dist
-from src.train_ppo import NavRLEnv, make_env_fn, construct_envs
+from src.train_ppo import construct_envs
 import threading
 import os.path as osp
 import signal
@@ -121,8 +115,8 @@ def main():
     if WORLD_RANK == 0 and not os.path.isdir(args.checkpoint_folder):
         os.makedirs(args.checkpoint_folder)
 
-    for p in sorted(list(vars(args))):
-        logger.debug("{}: {}".format(p, getattr(args, p)))
+        for p in sorted(list(vars(args))):
+            logger.info("{}: {}".format(p, getattr(args, p)))
 
     with construct_envs(args) as envs:
 

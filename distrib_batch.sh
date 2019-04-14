@@ -17,7 +17,8 @@ if [ ${USER} == "akadian" ]
 then
     echo "Using setup for Abhishek"
     source activate navigation-analysis
-    EXP_DIR="$/checkpoint/akadian/exp-dir/exp_habitat_api_navigation_analysis_datetime_${CURRENT_DATETIME}"
+    CURRENT_DATETIME="`date +%Y_%m_%d_%H_%M_%S`";
+    EXP_DIR="/checkpoint/akadian/exp-dir/exp_habitat_api_navigation_analysis_datetime_${CURRENT_DATETIME}"
     CHECKPOINT="${EXP_DIR}/checkpoints"
     mkdir -p ${EXP_DIR}
     mkdir -p ${CHECKPOINT}
@@ -34,9 +35,9 @@ fi
 ENV_NAME="pointnav_gibson_depth"
 SENSORS="DEPTH_SENSOR"
 PG_SENSOR_TYPE="DENSE"
+PG_SENSOR_DIMENSIONS=3
 BLIND=0
 RNN_TYPE="LSTM"
-CURRENT_DATETIME="`date +%Y_%m_%d_%H_%M_%S`";
 
 module purge
 module load cuda/10.0
@@ -78,4 +79,5 @@ srun python -u src/train_ppo_distrib.py \
     --reward-window-size 200 \
     --blind "${BLIND}" \
     --pointgoal-sensor-type "${PG_SENSOR_TYPE}" \
+    --pointgoal-sensor-dimensions ${PG_SENSOR_DIMENSIONS} \
     --env-name "${ENV_NAME}"
