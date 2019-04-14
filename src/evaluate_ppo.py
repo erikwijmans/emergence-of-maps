@@ -615,7 +615,8 @@ def main():
                         images_to_video(
                             rgb_frames[i],
                             output_dir,
-                            "{id}_{scene_name}_spl={spl:.2f}_d={dist:.2f}_bt={bts}_Kmax={kmax}".format(
+                            "{id}_{scene_name}_spl={spl:.2f}_"
+                            "d={dist:.2f}_bt={bts}_Kmax={kmax}".format(
                                 id=episode_id + 200,
                                 scene_name=scene_name,
                                 spl=infos[i]["spl"]["spl"],
@@ -642,7 +643,9 @@ def main():
                         frame = np.empty((size, 2 * size, 3), dtype=np.uint8)
                         frame[:, :size] = observations[i]["rgb"][:, :, :3]
 
-                        # rgb_frames[i].append(observations[i]["rgb"][:, :, :3])
+                        # rgb_frames[i].append(
+                        #   observations[i]["rgb"][:, :, :3]
+                        # )
                         if (
                             "pose" in infos[i]
                             and infos[i]["pose"]["is_collision"]
@@ -663,10 +666,12 @@ def main():
                             infos[i]["pose"]["rotation"]
                         )[1]
 
-                        ## Bideye
-                        # frame[:, 256:] = vis_utils.pointnav_draw_target_birdseye_view(
+                        # Brideye
+                        # frame[:, 256:] = \
+                        #   vis_utils.pointnav_draw_target_birdseye_view(
                         #     agent_position, agent_rotation,
-                        #     np.asarray(infos[i]["episode_info"]["goals"][0].position),
+                        #     np.asarray(infos[i]["episode_info"]["goals"]
+                        #                   [0].position),
                         #     goal_radius=0.5, resolution_px=256
                         # )
 
