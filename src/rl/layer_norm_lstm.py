@@ -14,16 +14,20 @@ class LayerNormLSTMCell(nn.LSTMCell):
     def forward(self, input, hidden=None):
         self.check_forward_input(input)
         if hidden is None:
-            hx = input.new_zeros(input.size(0), self.hidden_size, requires_grad=False)
-            cx = input.new_zeros(input.size(0), self.hidden_size, requires_grad=False)
+            hx = input.new_zeros(
+                input.size(0), self.hidden_size, requires_grad=False
+            )
+            cx = input.new_zeros(
+                input.size(0), self.hidden_size, requires_grad=False
+            )
         else:
             hx, cx = hidden
         self.check_forward_hidden(input, hx, "[0]")
         self.check_forward_hidden(input, cx, "[1]")
 
-        gates = self.ln_ih(F.linear(input, self.weight_ih, self.bias_ih)) + self.ln_hh(
-            F.linear(hx, self.weight_hh, self.bias_hh)
-        )
+        gates = self.ln_ih(
+            F.linear(input, self.weight_ih, self.bias_ih)
+        ) + self.ln_hh(F.linear(hx, self.weight_hh, self.bias_hh))
         i, f, o = gates[:, : (3 * self.hidden_size)].sigmoid().chunk(3, 1)
         g = gates[:, (3 * self.hidden_size) :].tanh()
 
@@ -34,7 +38,12 @@ class LayerNormLSTMCell(nn.LSTMCell):
 
 class LayerNormLSTM(nn.Module):
     def __init__(
-        self, input_size, hidden_size, num_layers=1, bias=True, bidirectional=False
+        self,
+        input_size,
+        hidden_size,
+        num_layers=1,
+        bias=True,
+        bidirectional=False,
     ):
         super().__init__()
         self.input_size = input_size
@@ -47,7 +56,9 @@ class LayerNormLSTM(nn.Module):
             [
                 LayerNormLSTMCell(
                     input_size=(
-                        input_size if layer == 0 else hidden_size * num_directions
+                        input_size
+                        if layer == 0
+                        else hidden_size * num_directions
                     ),
                     hidden_size=hidden_size,
                     bias=bias,
@@ -61,7 +72,9 @@ class LayerNormLSTM(nn.Module):
                 [
                     LayerNormLSTMCell(
                         input_size=(
-                            input_size if layer == 0 else hidden_size * num_directions
+                            input_size
+                            if layer == 0
+                            else hidden_size * num_directions
                         ),
                         hidden_size=hidden_size,
                         bias=bias,
@@ -94,7 +107,9 @@ class LayerNormLSTM(nn.Module):
 
         if self.bidirectional:
             xs = input
-            for l, (layer0, layer1) in enumerate(zip(self.hidden0, self.hidden1)):
+            for l, (layer0, layer1) in enumerate(
+                zip(self.hidden0, self.hidden1)
+            ):
                 l0, l1 = 2 * l, 2 * l + 1
                 h0, c0, h1, c1 = hx[l0], cx[l0], hx[l1], cx[l1]
                 for t, (x0, x1) in enumerate(zip(xs, reversed(xs))):

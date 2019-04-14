@@ -77,12 +77,15 @@ class NavRLEnv(habitat.RLEnv):
     def _distance_target(self):
         current_position = self._env.sim.get_agent_state().position.tolist()
         target_position = self._env.current_episode.goals[0].position
-        distance = self._env.sim.geodesic_distance(current_position, target_position)
+        distance = self._env.sim.geodesic_distance(
+            current_position, target_position
+        )
         return distance
 
     def _episode_success(self):
         if (
-            self._previous_action == SIM_NAME_TO_ACTION[SimulatorActions.STOP.value]
+            self._previous_action
+            == SIM_NAME_TO_ACTION[SimulatorActions.STOP.value]
             and self._distance_target() < self._config_env.SUCCESS_DISTANCE
         ):
             return True
@@ -140,7 +143,8 @@ def construct_envs(args):
         random.shuffle(scenes)
 
         assert len(scenes) >= args.num_processes, (
-            "reduce the number of processes as there " "aren't enough number of scenes"
+            "reduce the number of processes as there "
+            "aren't enough number of scenes"
         )
         scene_split_size = int(np.floor(len(scenes) / args.num_processes))
 
@@ -154,9 +158,13 @@ def construct_envs(args):
             ]
 
         config_env.SIMULATOR.HABITAT_SIM_V0.GPU_DEVICE_ID = args.sim_gpu_id
-        config_env.TASK.POINTGOAL_SENSOR.SENSOR_TYPE = args.pointgoal_sensor_type
+        config_env.TASK.POINTGOAL_SENSOR.SENSOR_TYPE = (
+            args.pointgoal_sensor_type
+        )
 
-        agent_sensors = [s for s in args.sensors.strip().split(",") if len(s) > 0]
+        agent_sensors = [
+            s for s in args.sensors.strip().split(",") if len(s) > 0
+        ]
         for sensor in agent_sensors:
             assert sensor in ["RGB_SENSOR", "DEPTH_SENSOR"]
         config_env.SIMULATOR.AGENT_0.SENSORS = agent_sensors
@@ -278,12 +286,16 @@ def main():
     count_checkpoints = 0
 
     logger.info(
-        "start_update: {}, num_updates: {}".format(start_update, args.num_updates)
+        "start_update: {}, num_updates: {}".format(
+            start_update, args.num_updates
+        )
     )
 
     for update in range(start_update, args.num_updates):
         if args.use_linear_lr_decay:
-            update_linear_schedule(agent.optimizer, update, args.num_updates, args.lr)
+            update_linear_schedule(
+                agent.optimizer, update, args.num_updates, args.lr
+            )
 
         agent.clip_param = args.clip_param * (1 - update / args.num_updates)
 
@@ -310,7 +322,9 @@ def main():
             t_step_env = time()
 
             outputs = envs.step([a[0].item() for a in actions])
-            observations, rewards, dones, infos = [list(x) for x in zip(*outputs)]
+            observations, rewards, dones, infos = [
+                list(x) for x in zip(*outputs)
+            ]
 
             env_time += time() - t_step_env
 
@@ -362,14 +376,18 @@ def main():
 
         t_update_model = time()
         with torch.no_grad():
-            last_observation = {k: v[-1] for k, v in rollouts.observations.items()}
+            last_observation = {
+                k: v[-1] for k, v in rollouts.observations.items()
+            }
             next_value = actor_critic.get_value(
                 last_observation,
                 rollouts.recurrent_hidden_states[-1],
                 rollouts.masks[-1],
             ).detach()
 
-        rollouts.compute_returns(next_value, args.use_gae, args.gamma, args.tau)
+        rollouts.compute_returns(
+            next_value, args.use_gae, args.gamma, args.tau
+        )
 
         value_loss, action_loss, dist_entropy = agent.update(rollouts)
 
@@ -399,9 +417,13 @@ def main():
                 window_episode_success[-1] - window_episode_success[0]
             ).sum()
 
-            window_counts = (window_episode_counts[-1] - window_episode_counts[0]).sum()
+            window_counts = (
+                window_episode_counts[-1] - window_episode_counts[0]
+            ).sum()
 
-            window_counts = (window_episode_counts[-1] - window_episode_counts[0]).sum()
+            window_counts = (
+                window_episode_counts[-1] - window_episode_counts[0]
+            ).sum()
 
             if window_counts > 0:
                 logger.info(
@@ -423,7 +445,9 @@ def main():
             window_rewards = (
                 window_episode_reward[-1] - window_episode_reward[0]
             ).sum()
-            window_counts = (window_episode_counts[-1] - window_episode_counts[0]).sum()
+            window_counts = (
+                window_episode_counts[-1] - window_episode_counts[0]
+            ).sum()
             avg_reward = (window_rewards / window_counts).item()
             if np.isnan(avg_reward):
                 avg_reward = 0
@@ -432,7 +456,9 @@ def main():
                 checkpoint,
                 os.path.join(
                     args.checkpoint_folder,
-                    "ckpt.{}.reward.{:.3f}.pth".format(avg_reward, count_checkpoints),
+                    "ckpt.{}.reward.{:.3f}.pth".format(
+                        avg_reward, count_checkpoints
+                    ),
                 ),
             )
 

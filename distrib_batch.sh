@@ -17,8 +17,9 @@ if [ ${USER} == "akadian" ]
 then
     echo "Using setup for Abhishek"
     source activate navigation-analysis
-    BASE_EXP_DIR="/checkpoint/akadian/exp-dir"
-    CHECKPOINT="${BASE_EXP_DIR}/checkpoints"
+    EXP_DIR="$/checkpoint/akadian/exp-dir/exp_habitat_api_navigation_analysis_datetime_${CURRENT_DATETIME}"
+    CHECKPOINT="${EXP_DIR}/checkpoints"
+    mkdir -p ${EXP_DIR}
     mkdir -p ${CHECKPOINT}
 elif [${USER} == "erikwijmans"]
 then
@@ -46,9 +47,6 @@ export PYTHONPATH=$(pwd):$(pwd)/habitat-api-navigation-analysis:${PYTHONPATH}
 export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu/nvidia-opengl:${LD_LIBRARY_PATH}
 export GLOG_minloglevel=2
 export MAGNUM_LOG=quiet
-
-EXP_DIR="${BASE_EXP_DIR}/exp.habitat_api_navigation_analysis.datetime_${CURRENT_DATETIME}"
-mkdir -p ${EXP_DIR}
 
 export MASTER_ADDR=$(srun --ntasks=1 hostname 2>&1 | tail -n1)
 set -x

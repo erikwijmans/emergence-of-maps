@@ -227,7 +227,9 @@ def main():
                         agent.optimizer, update, args.num_updates, args.lr
                     )
 
-                agent.clip_param = args.clip_param * (1 - update / args.num_updates)
+                agent.clip_param = args.clip_param * (
+                    1 - update / args.num_updates
+                )
 
                 actor_critic.eval()
                 for step in range(args.num_steps):
@@ -235,7 +237,8 @@ def main():
                     # sample actions
                     with torch.no_grad():
                         step_observation = {
-                            k: v[step] for k, v in rollouts.observations.items()
+                            k: v[step]
+                            for k, v in rollouts.observations.items()
                         }
 
                         (
@@ -262,7 +265,9 @@ def main():
 
                     t_update_stats = time()
                     batch = batch_obs(observations)
-                    rewards = torch.tensor(rewards, dtype=torch.float, device=device)
+                    rewards = torch.tensor(
+                        rewards, dtype=torch.float, device=device
+                    )
                     rewards = rewards.unsqueeze(1)
 
                     masks = torch.tensor(
@@ -307,7 +312,12 @@ def main():
                     pth_time += time() - t_update_stats
 
                 stats = torch.cat(
-                    [episode_rewards, episode_spls, episode_successes, episode_counts],
+                    [
+                        episode_rewards,
+                        episode_spls,
+                        episode_successes,
+                        episode_counts,
+                    ],
                     1,
                 )
                 dist.all_reduce(stats)
@@ -328,7 +338,9 @@ def main():
                         rollouts.masks[-1],
                     ).detach()
 
-                rollouts.compute_returns(next_value, args.use_gae, args.gamma, args.tau)
+                rollouts.compute_returns(
+                    next_value, args.use_gae, args.gamma, args.tau
+                )
 
                 actor_critic.train()
                 value_loss, action_loss, dist_entropy = agent.update(rollouts)
@@ -356,12 +368,17 @@ def main():
                     }
 
                     writer.add_scalar(
-                        "reward", deltas["reward"] / deltas["count"], count_steps
+                        "reward",
+                        deltas["reward"] / deltas["count"],
+                        count_steps,
                     )
 
                     writer.add_scalars(
                         "metrics",
-                        {k: deltas[k] / deltas["count"] for k in ["spl", "success"]},
+                        {
+                            k: deltas[k] / deltas["count"]
+                            for k in ["spl", "success"]
+                        },
                         count_steps,
                     )
 
@@ -396,26 +413,32 @@ def main():
 
                         logger.info(
                             "update: {}\tfps: {:.3f}".format(
-                                update, count_steps / ((time() - t_start) + prev_time)
+                                update,
+                                count_steps / ((time() - t_start) + prev_time),
                             )
                         )
 
                         logger.info(
                             "update: {}\tenv-time: {:.3f}s\tpth-time: {:.3f}s"
-                            "frames: {}".format(update, env_time, pth_time, count_steps)
+                            "frames: {}".format(
+                                update, env_time, pth_time, count_steps
+                            )
                         )
 
                         window_rewards = (
-                            window_episode_reward[-1] - window_episode_reward[0]
+                            window_episode_reward[-1]
+                            - window_episode_reward[0]
                         ).sum()
                         window_spl = (
                             window_episode_spl[-1] - window_episode_spl[0]
                         ).sum()
                         window_successes = (
-                            window_episode_successes[-1] - window_episode_successes[0]
+                            window_episode_successes[-1]
+                            - window_episode_successes[0]
                         ).sum()
                         window_counts = (
-                            window_episode_counts[-1] - window_episode_counts[0]
+                            window_episode_counts[-1]
+                            - window_episode_counts[0]
                         ).sum()
 
                         if window_counts > 0:

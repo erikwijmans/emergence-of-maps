@@ -46,7 +46,9 @@ def images_to_video(images, output_dir, video_name):
     for im in tqdm.tqdm(images):
         writer.append_data(im)
     writer.close()
-    print("Generated video: {}".format(str(os.path.join(output_dir, video_name))))
+    print(
+        "Generated video: {}".format(str(os.path.join(output_dir, video_name)))
+    )
 
 
 def basename(path):
@@ -70,7 +72,9 @@ def calc_metrics(episode_metrics):
             for item in path:
                 value = value[item]
             # print(metric, ": ", value)
-            aggregated_metrics[metric] = aggregated_metrics.get(metric, 0) + value
+            aggregated_metrics[metric] = (
+                aggregated_metrics.get(metric, 0) + value
+            )
             # print(metric, aggregated_metrics[metric])
 
     for metric in metrics.keys():
@@ -155,7 +159,9 @@ def main():
         default="SPARSE",
         choices=["DENSE", "SPARSE"],
     )
-    parser.add_argument("--rnn-type", type=str, default="LSTM", choices=["LSTM"])
+    parser.add_argument(
+        "--rnn-type", type=str, default="LSTM", choices=["LSTM"]
+    )
     parser.add_argument("--neuron", type=int, default=0)
     args = parser.parse_args()
     if args.blind:
@@ -182,12 +188,15 @@ def main():
 
         config_env.SIMULATOR.HABITAT_SIM_V0.COMPRESS_TEXTURES = False
 
-        config_env.TASK.POINTGOAL_SENSOR.SENSOR_TYPE = args.pointgoal_sensor_type
+        config_env.TASK.POINTGOAL_SENSOR.SENSOR_TYPE = (
+            args.pointgoal_sensor_type
+        )
         if args.record_video and "RGB_SENSOR" not in agent_sensors:
             agent_sensors.append("RGB_SENSOR")
         config_env.SIMULATOR.AGENT_0.SENSORS = agent_sensors
         print(
-            "config_env.SIMULATOR.AGENT_0.SENSORS", config_env.SIMULATOR.AGENT_0.SENSORS
+            "config_env.SIMULATOR.AGENT_0.SENSORS",
+            config_env.SIMULATOR.AGENT_0.SENSORS,
         )
         config_env.TASK.MEASUREMENTS = ["SPL", "EPISODE_INFO", "POSE"]
         config_env.SIMULATOR.RGB_SENSOR.WIDTH = 1024
@@ -207,7 +216,9 @@ def main():
     dummy_dataset = PointNavDatasetV1(env_configs[0].DATASET)
 
     if len(dummy_dataset.episodes) > args.count_test_episodes:
-        dummy_dataset.episodes = dummy_dataset.episodes[: args.count_test_episodes]
+        dummy_dataset.episodes = dummy_dataset.episodes[
+            : args.count_test_episodes
+        ]
     assert len(baseline_configs) > 0, "empty list of datasets"
 
     envs = habitat.VectorEnv(
@@ -256,7 +267,9 @@ def main():
         max_grad_norm=0.5,
     )
 
-    ppo.load_state_dict({k: v for k, v in ckpt["state_dict"].items() if "ddp" not in k})
+    ppo.load_state_dict(
+        {k: v for k, v in ckpt["state_dict"].items() if "ddp" not in k}
+    )
 
     actor_critic = ppo.actor_critic
     actor_critic.eval()
@@ -279,7 +292,9 @@ def main():
         device=device,
     )
     not_done_masks = torch.zeros(args.num_processes, 1, device=device)
-    prev_actions = torch.zeros(args.num_processes, 1, device=device, dtype=torch.int64)
+    prev_actions = torch.zeros(
+        args.num_processes, 1, device=device, dtype=torch.int64
+    )
 
     rgb_frames = [[]] * args.num_processes
     output_dir = "data/eval/karpathy_johnson_v2/{}".format(get_run_name(args))
@@ -287,7 +302,10 @@ def main():
         os.makedirs(output_dir)
     episode_metrics = {}
     pbar = tqdm.tqdm(total=len(dummy_dataset.episodes))
-    print("UNIQUE EPISODES ID: ", {ep.episode_id for ep in dummy_dataset.episodes})
+    print(
+        "UNIQUE EPISODES ID: ",
+        {ep.episode_id for ep in dummy_dataset.episodes},
+    )
     map_changes = []
     while episode_counts.sum() < len(dummy_dataset.episodes):
         with torch.no_grad():
@@ -303,7 +321,9 @@ def main():
 
             outputs = envs.step([a[0].item() for a in actions])
 
-            observations, rewards, dones, infos = [list(x) for x in zip(*outputs)]
+            observations, rewards, dones, infos = [
+                list(x) for x in zip(*outputs)
+            ]
             batch = batch_obs(observations)
             for sensor in batch:
                 batch[sensor] = batch[sensor].to(device)
@@ -331,7 +351,9 @@ def main():
                             id=episode_id,
                             scene_name=scene_name,
                             spl=infos[i]["spl"]["spl"],
-                            dist=infos[i]["episode_info"]["info"]["geodesic_distance"],
+                            dist=infos[i]["episode_info"]["info"][
+                                "geodesic_distance"
+                            ],
                         ),
                     )
                     rgb_frames[i] = []
@@ -355,12 +377,13 @@ def main():
                         mask = mask == 1
                         alpha = 0.5
                         frame[mask] = (
-                            alpha * np.array([255, 0, 0]) + (1.0 - alpha) * frame
+                            alpha * np.array([255, 0, 0])
+                            + (1.0 - alpha) * frame
                         )[mask]
                     agent_position = infos[i]["pose"]["position"]
-                    agent_rotation = -quaternion_to_euler(infos[i]["pose"]["rotation"])[
-                        1
-                    ]
+                    agent_rotation = -quaternion_to_euler(
+                        infos[i]["pose"]["rotation"]
+                    )[1]
 
                     map = infos[i]["pose"]["map"]
                     ax, ay = infos[i]["pose"]["prev_map_agent_pos"]
@@ -369,7 +392,9 @@ def main():
                             (ax, ay),
                             int(
                                 (
-                                    test_recurrent_hidden_states[1, i, args.neuron]
+                                    test_recurrent_hidden_states[
+                                        1, i, args.neuron
+                                    ]
                                     .tanh()
                                     .item()
                                     + 1.0
@@ -388,7 +413,9 @@ def main():
                     scale_x = scale_y = scale
                     map = vis_utils.lut_top_down_map[map]
                     map = vis_utils.resize_img(
-                        map, round(scale * map.shape[0]), round(scale * map.shape[1])
+                        map,
+                        round(scale * map.shape[0]),
+                        round(scale * map.shape[1]),
                     )
                     map_agent_pos = infos[i]["pose"]["map_agent_pos"]
                     map_agent_pos[0] = int(map_agent_pos[0] * scale_x)
@@ -406,7 +433,9 @@ def main():
                     frame[: map.shape[0], 1024 : 1024 + map.shape[1]] = map
                     rgb_frames[i].append(frame)
 
-        rewards = torch.tensor(rewards, dtype=torch.float, device=device).unsqueeze(1)
+        rewards = torch.tensor(
+            rewards, dtype=torch.float, device=device
+        ).unsqueeze(1)
         current_episode_reward += rewards
         episode_rewards += (1 - not_done_masks) * current_episode_reward
         episode_counts += 1 - not_done_masks
