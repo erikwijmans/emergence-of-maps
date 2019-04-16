@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=navigation-analysis-habitat
-#SBATCH --output=/checkpoint/akadian/jobs/job.%j.out
-#SBATCH --error=/checkpoint/akadian/jobs/job.%j.err
+#SBATCH --output=/checkpoint/%u/jobs/job.%j.out
+#SBATCH --error=/checkpoint/%u/jobs/job.%j.err
 #SBATCH --gres gpu:8
 #SBATCH --nodes 2
 #SBATCH --cpus-per-task 10
@@ -20,7 +20,7 @@ then
     BASE_EXP_DIR="/checkpoint/akadian/exp-dir"
     CHECKPOINT="${BASE_EXP_DIR}/checkpoints"
     mkdir -p ${CHECKPOINT}
-elif [${USER} == "erikwijmans"]
+elif [ ${USER} == "erikwijmans" ]
 then
     echo "Using setup for Erik"
     . /private/home/erikwijmans/miniconda3/etc/profile.d/conda.sh
