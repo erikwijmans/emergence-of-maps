@@ -6,13 +6,20 @@ import torch.nn.functional as F
 def conv3x3(in_planes, out_planes, stride=1):
     """3x3 convolution with padding"""
     return nn.Conv2d(
-        in_planes, out_planes, kernel_size=3, stride=stride, padding=1, bias=False
+        in_planes,
+        out_planes,
+        kernel_size=3,
+        stride=stride,
+        padding=1,
+        bias=False,
     )
 
 
 def conv1x1(in_planes, out_planes, stride=1):
     """1x1 convolution"""
-    return nn.Conv2d(in_planes, out_planes, kernel_size=1, stride=stride, bias=False)
+    return nn.Conv2d(
+        in_planes, out_planes, kernel_size=1, stride=stride, bias=False
+    )
 
 
 class BasicBlock(nn.Module):
@@ -75,7 +82,12 @@ class ResNet(nn.Module):
         super(ResNet, self).__init__()
         self.conv1 = nn.Sequential(
             nn.Conv2d(
-                in_channels, base_planes, kernel_size=7, stride=2, padding=3, bias=False
+                in_channels,
+                base_planes,
+                kernel_size=7,
+                stride=2,
+                padding=3,
+                bias=False,
             ),
             nn.GroupNorm(ngroups, base_planes),
             nn.ReLU(True),
@@ -106,7 +118,9 @@ class ResNet(nn.Module):
             )
 
         layers = []
-        layers.append(block(self.inplanes, planes, ngroups, stride, downsample))
+        layers.append(
+            block(self.inplanes, planes, ngroups, stride, downsample)
+        )
         self.inplanes = planes * block.expansion
         for i in range(1, blocks):
             layers.append(block(self.inplanes, planes, ngroups))

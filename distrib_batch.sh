@@ -3,11 +3,11 @@
 #SBATCH --output=/checkpoint/%u/jobs/job.%j.out
 #SBATCH --error=/checkpoint/%u/jobs/job.%j.err
 #SBATCH --gres gpu:8
-#SBATCH --nodes 2
+#SBATCH --nodes 4
 #SBATCH --cpus-per-task 10
 #SBATCH --ntasks-per-node 8
 #SBATCH --mem=400GB
-#SBATCH --partition=dev
+#SBATCH --partition=learnfair
 #SBATCH --time=24:00:00
 #SBATCH --signal=USR1@600
 #SBATCH --open-mode=append
@@ -17,8 +17,10 @@ if [ ${USER} == "akadian" ]
 then
     echo "Using setup for Abhishek"
     source activate navigation-analysis
-    BASE_EXP_DIR="/checkpoint/akadian/exp-dir"
-    CHECKPOINT="${BASE_EXP_DIR}/checkpoints"
+    CURRENT_DATETIME="`date +%Y_%m_%d_%H_%M_%S`";
+    EXP_DIR="/checkpoint/akadian/exp-dir/exp_habitat_api_navigation_analysis_datetime_${CURRENT_DATETIME}"
+    CHECKPOINT="${EXP_DIR}/checkpoints"
+    mkdir -p ${EXP_DIR}
     mkdir -p ${CHECKPOINT}
 elif [ ${USER} == "erikwijmans" ]
 then
@@ -33,9 +35,9 @@ fi
 ENV_NAME="pointnav_gibson_depth"
 SENSORS="DEPTH_SENSOR"
 PG_SENSOR_TYPE="DENSE"
+PG_SENSOR_DIMENSIONS=3
 BLIND=0
 RNN_TYPE="LSTM"
-CURRENT_DATETIME="`date +%Y_%m_%d_%H_%M_%S`";
 
 module purge
 module load cuda/10.0
@@ -46,9 +48,6 @@ export PYTHONPATH=$(pwd):$(pwd)/habitat-api-navigation-analysis:${PYTHONPATH}
 export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu/nvidia-opengl:${LD_LIBRARY_PATH}
 export GLOG_minloglevel=2
 export MAGNUM_LOG=quiet
-
-EXP_DIR="${BASE_EXP_DIR}/exp.habitat_api_navigation_analysis.datetime_${CURRENT_DATETIME}"
-mkdir -p ${EXP_DIR}
 
 export MASTER_ADDR=$(srun --ntasks=1 hostname 2>&1 | tail -n1)
 set -x
@@ -80,4 +79,5 @@ srun python -u src/train_ppo_distrib.py \
     --reward-window-size 200 \
     --blind "${BLIND}" \
     --pointgoal-sensor-type "${PG_SENSOR_TYPE}" \
+    --pointgoal-sensor-dimensions ${PG_SENSOR_DIMENSIONS} \
     --env-name "${ENV_NAME}"

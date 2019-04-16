@@ -55,7 +55,9 @@ class PPO(nn.Module):
         # This allows us to leverage all the work done so backdrop and all_reduce can happen
         # simultaneously
         self.ddp = torch.nn.parallel.DistributedDataParallel(
-            self.actor_critic, device_ids=[self.device], output_device=self.device
+            self.actor_critic,
+            device_ids=[self.device],
+            output_device=self.device,
         )
 
         self.all_advantages = None
@@ -81,13 +83,17 @@ class PPO(nn.Module):
             return advantages
 
         if self.all_advantages is None:
-            self.all_advantages = [advantages.clone() for _ in range(self.world_size)]
+            self.all_advantages = [
+                advantages.clone() for _ in range(self.world_size)
+            ]
 
         # Gather all the advantages across all the rollouts so we can compute mean and std
         dist.all_gather(self.all_advantages, advantages)
         gathered_adv = torch.cat(self.all_advantages)
 
-        return (advantages - gathered_adv.mean()) / (gathered_adv.std() + EPS_PPO)
+        return (advantages - gathered_adv.mean()) / (
+            gathered_adv.std() + EPS_PPO
+        )
 
     def update(self, rollouts):
         advantages = self.get_advantages(rollouts)
@@ -129,10 +135,14 @@ class PPO(nn.Module):
                     actions_batch,
                 )
 
-                ratio = torch.exp(action_log_probs - old_action_log_probs_batch)
+                ratio = torch.exp(
+                    action_log_probs - old_action_log_probs_batch
+                )
                 surr1 = ratio * adv_targ
                 surr2 = (
-                    torch.clamp(ratio, 1.0 - self.clip_param, 1.0 + self.clip_param)
+                    torch.clamp(
+                        ratio, 1.0 - self.clip_param, 1.0 + self.clip_param
+                    )
                     * adv_targ
                 )
                 action_loss = -torch.min(surr1, surr2).mean()
@@ -142,9 +152,12 @@ class PPO(nn.Module):
                         values - value_preds_batch
                     ).clamp(-self.clip_param, self.clip_param)
                     value_losses = (values - return_batch).pow(2)
-                    value_losses_clipped = (value_pred_clipped - return_batch).pow(2)
+                    value_losses_clipped = (
+                        value_pred_clipped - return_batch
+                    ).pow(2)
                     value_loss = (
-                        0.5 * torch.max(value_losses, value_losses_clipped).mean()
+                        0.5
+                        * torch.max(value_losses, value_losses_clipped).mean()
                     )
                 else:
                     value_loss = 0.5 * (return_batch - values).pow(2).mean()
@@ -162,7 +175,10 @@ class PPO(nn.Module):
                     )
                     egomotion_loss = (
                         0.01
-                        * (masks_batch.view(t, n)[:-1].view(-1) * egomotion_loss).sum()
+                        * (
+                            masks_batch.view(t, n)[:-1].view(-1)
+                            * egomotion_loss
+                        ).sum()
                         / max((masks_batch.view(t, n)[:-1]).sum().item(), 32.0)
                     )
 
@@ -185,7 +201,9 @@ class PPO(nn.Module):
 
                     delta_pos_loss = (
                         masks_batch.view(t, n)[1:] * delta_pos_loss
-                    ).sum() / max(masks_batch.view(t, n)[1:].sum().item(), 32.0)
+                    ).sum() / max(
+                        masks_batch.view(t, n)[1:].sum().item(), 32.0
+                    )
 
                     aux_loss = egomotion_loss + gps_loss + delta_pos_loss
 

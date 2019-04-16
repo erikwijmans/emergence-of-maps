@@ -73,11 +73,16 @@ class RolloutStorage:
 
         for sensor in observation_space.spaces:
             self.observations[sensor] = torch.zeros(
-                num_steps + 1, num_envs, *observation_space.spaces[sensor].shape
+                num_steps + 1,
+                num_envs,
+                *observation_space.spaces[sensor].shape
             )
 
         self.recurrent_hidden_states = torch.zeros(
-            num_steps + 1, num_recurrent_layers, num_envs, recurrent_hidden_state_size
+            num_steps + 1,
+            num_recurrent_layers,
+            num_envs,
+            recurrent_hidden_state_size,
         )
 
         self.rewards = torch.zeros(num_steps, num_envs, 1)
@@ -125,8 +130,12 @@ class RolloutStorage:
         masks,
     ):
         for sensor in observations:
-            self.observations[sensor][self.step + 1].copy_(observations[sensor])
-        self.recurrent_hidden_states[self.step + 1].copy_(recurrent_hidden_states)
+            self.observations[sensor][self.step + 1].copy_(
+                observations[sensor]
+            )
+        self.recurrent_hidden_states[self.step + 1].copy_(
+            recurrent_hidden_states
+        )
         self.actions[self.step].copy_(actions)
         self.prev_actions[self.step + 1].copy_(actions)
         self.action_log_probs[self.step].copy_(action_log_probs)
@@ -202,7 +211,9 @@ class RolloutStorage:
                 value_preds_batch.append(self.value_preds[:-1, ind])
                 return_batch.append(self.returns[:-1, ind])
                 masks_batch.append(self.masks[:-1, ind])
-                old_action_log_probs_batch.append(self.action_log_probs[:, ind])
+                old_action_log_probs_batch.append(
+                    self.action_log_probs[:, ind]
+                )
 
                 adv_targ.append(advantages[:, ind])
 
@@ -210,14 +221,18 @@ class RolloutStorage:
 
             # These are all tensors of size (T, N, -1)
             for sensor in observations_batch:
-                observations_batch[sensor] = torch.stack(observations_batch[sensor], 1)
+                observations_batch[sensor] = torch.stack(
+                    observations_batch[sensor], 1
+                )
 
             actions_batch = torch.stack(actions_batch, 1)
             prev_actions_batch = torch.stack(prev_actions_batch, 1)
             value_preds_batch = torch.stack(value_preds_batch, 1)
             return_batch = torch.stack(return_batch, 1)
             masks_batch = torch.stack(masks_batch, 1)
-            old_action_log_probs_batch = torch.stack(old_action_log_probs_batch, 1)
+            old_action_log_probs_batch = torch.stack(
+                old_action_log_probs_batch, 1
+            )
             adv_targ = torch.stack(adv_targ, 1)
 
             # States is just a (num_layers, N, -1) tensor
@@ -262,7 +277,9 @@ def batch_obs(observations):
             batch[sensor].append(obs[sensor])
 
     for sensor in batch:
-        batch[sensor] = torch.tensor(np.array(batch[sensor]), dtype=torch.float)
+        batch[sensor] = torch.tensor(
+            np.array(batch[sensor]), dtype=torch.float
+        )
     return batch
 
 
@@ -275,7 +292,10 @@ def ppo_args():
         help="ppo clip parameter (default: 0.2)",
     )
     parser.add_argument(
-        "--ppo-epoch", type=int, default=4, help="number of ppo epochs (default: 4)"
+        "--ppo-epoch",
+        type=int,
+        default=4,
+        help="number of ppo epochs (default: 4)",
     )
     parser.add_argument(
         "--num-mini-batch",
@@ -351,9 +371,14 @@ def ppo_args():
     parser.add_argument(
         "--tau", type=float, default=0.95, help="gae parameter (default: 0.95)"
     )
-    parser.add_argument("--log-file", type=str, required=True, help="path for log file")
     parser.add_argument(
-        "--reward-window-size", type=int, default=50, help="logging window for rewards"
+        "--log-file", type=str, required=True, help="path for log file"
+    )
+    parser.add_argument(
+        "--reward-window-size",
+        type=int,
+        default=50,
+        help="logging window for rewards",
     )
     parser.add_argument(
         "--log-interval",
@@ -380,10 +405,16 @@ def ppo_args():
         help="gpu id on which scenes are loaded",
     )
     parser.add_argument(
-        "--pth-gpu-id", type=int, required=True, help="gpu id on which pytorch runs"
+        "--pth-gpu-id",
+        type=int,
+        required=True,
+        help="gpu id on which pytorch runs",
     )
     parser.add_argument(
-        "--num-updates", type=int, default=10000, help="number of PPO updates to run"
+        "--num-updates",
+        type=int,
+        default=10000,
+        help="number of PPO updates to run",
     )
     parser.add_argument(
         "--sensors",
@@ -407,8 +438,18 @@ def ppo_args():
         default="DENSE",
         choices=["DENSE", "SPARSE"],
     )
+    parser.add_argument(
+        "--pointgoal-sensor-dimensions",
+        type=int,
+        choices=[2, 3]
+    )
     parser.add_argument("--use-aux-losses", type=int, default=0)
-    parser.add_argument("--rnn-type", type=str, default="GRU", choices=["LSTM", "GRU", "LN-LSTM"])
+    parser.add_argument(
+        "--rnn-type",
+        type=str,
+        default="GRU",
+        choices=["LSTM", "GRU", "LN-LSTM"],
+    )
     parser.add_argument("--env-name", type=str, default=None)
     parser.add_argument("--noise-truncate", type=float, default=0.0)
 

@@ -8,19 +8,13 @@ import os
 from time import time, sleep
 from collections import deque
 import random
-import numpy as np
 
 import torch
-import habitat
 from habitat import logger
-from habitat.sims.habitat_simulator import SimulatorActions, SIM_NAME_TO_ACTION
-from habitat.config.default import get_config as cfg_env
-from habitat.datasets.pointnav.pointnav_dataset import PointNavDatasetV1
-from src.config.default import cfg as cfg_baseline
 from src.rl.ppo import PPO, Policy, RolloutStorage
 from src.rl.ppo.utils import update_linear_schedule, ppo_args, batch_obs
 import torch.distributed as dist
-from src.train_ppo import NavRLEnv, make_env_fn, construct_envs
+from src.train_ppo import construct_envs
 import threading
 import os.path as osp
 import signal
@@ -121,8 +115,8 @@ def main():
     if WORLD_RANK == 0 and not os.path.isdir(args.checkpoint_folder):
         os.makedirs(args.checkpoint_folder)
 
-    for p in sorted(list(vars(args))):
-        logger.debug("{}: {}".format(p, getattr(args, p)))
+        for p in sorted(list(vars(args))):
+            logger.info("{}: {}".format(p, getattr(args, p)))
 
     with construct_envs(args) as envs:
 
@@ -227,7 +221,9 @@ def main():
                         agent.optimizer, update, args.num_updates, args.lr
                     )
 
-                agent.clip_param = args.clip_param * (1 - update / args.num_updates)
+                agent.clip_param = args.clip_param * (
+                    1 - update / args.num_updates
+                )
 
                 actor_critic.eval()
                 for step in range(args.num_steps):
@@ -235,7 +231,8 @@ def main():
                     # sample actions
                     with torch.no_grad():
                         step_observation = {
-                            k: v[step] for k, v in rollouts.observations.items()
+                            k: v[step]
+                            for k, v in rollouts.observations.items()
                         }
 
                         (
@@ -262,7 +259,9 @@ def main():
 
                     t_update_stats = time()
                     batch = batch_obs(observations)
-                    rewards = torch.tensor(rewards, dtype=torch.float, device=device)
+                    rewards = torch.tensor(
+                        rewards, dtype=torch.float, device=device
+                    )
                     rewards = rewards.unsqueeze(1)
 
                     masks = torch.tensor(
@@ -307,7 +306,12 @@ def main():
                     pth_time += time() - t_update_stats
 
                 stats = torch.cat(
-                    [episode_rewards, episode_spls, episode_successes, episode_counts],
+                    [
+                        episode_rewards,
+                        episode_spls,
+                        episode_successes,
+                        episode_counts,
+                    ],
                     1,
                 )
                 dist.all_reduce(stats)
@@ -328,7 +332,9 @@ def main():
                         rollouts.masks[-1],
                     ).detach()
 
-                rollouts.compute_returns(next_value, args.use_gae, args.gamma, args.tau)
+                rollouts.compute_returns(
+                    next_value, args.use_gae, args.gamma, args.tau
+                )
 
                 actor_critic.train()
                 value_loss, action_loss, dist_entropy = agent.update(rollouts)
@@ -356,12 +362,17 @@ def main():
                     }
 
                     writer.add_scalar(
-                        "reward", deltas["reward"] / deltas["count"], count_steps
+                        "reward",
+                        deltas["reward"] / deltas["count"],
+                        count_steps,
                     )
 
                     writer.add_scalars(
                         "metrics",
-                        {k: deltas[k] / deltas["count"] for k in ["spl", "success"]},
+                        {
+                            k: deltas[k] / deltas["count"]
+                            for k in ["spl", "success"]
+                        },
                         count_steps,
                     )
 
@@ -395,27 +406,33 @@ def main():
                         _save_state()
 
                         logger.info(
-                            "update: {}\tfps: {:.3f}\t".format(
-                                update, count_steps / ((time() - t_start) + prev_time)
+                            "update: {}\tfps: {:.3f}".format(
+                                update,
+                                count_steps / ((time() - t_start) + prev_time),
                             )
                         )
 
                         logger.info(
-                            "update: {}\tenv-time: {:.3f}s\tpth-time: {:.3f}s\t"
-                            "frames: {}".format(update, env_time, pth_time, count_steps)
+                            "update: {}\tenv-time: {:.3f}s\tpth-time: {:.3f}s"
+                            "frames: {}".format(
+                                update, env_time, pth_time, count_steps
+                            )
                         )
 
                         window_rewards = (
-                            window_episode_reward[-1] - window_episode_reward[0]
+                            window_episode_reward[-1]
+                            - window_episode_reward[0]
                         ).sum()
                         window_spl = (
                             window_episode_spl[-1] - window_episode_spl[0]
                         ).sum()
                         window_successes = (
-                            window_episode_successes[-1] - window_episode_successes[0]
+                            window_episode_successes[-1]
+                            - window_episode_successes[0]
                         ).sum()
                         window_counts = (
-                            window_episode_counts[-1] - window_episode_counts[0]
+                            window_episode_counts[-1]
+                            - window_episode_counts[0]
                         ).sum()
 
                         if window_counts > 0:
