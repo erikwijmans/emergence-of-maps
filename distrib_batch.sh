@@ -36,6 +36,7 @@ ENV_NAME="pointnav_gibson_depth"
 SENSORS="DEPTH_SENSOR"
 PG_SENSOR_TYPE="DENSE"
 PG_SENSOR_DIMENSIONS=3
+PG_FORMAT="CARTESIAN"
 BLIND=0
 RNN_TYPE="LSTM"
 
@@ -80,4 +81,5 @@ srun python -u src/train_ppo_distrib.py \
     --blind "${BLIND}" \
     --pointgoal-sensor-type "${PG_SENSOR_TYPE}" \
     --pointgoal-sensor-dimensions ${PG_SENSOR_DIMENSIONS} \
+    --pointgoal-sensor-format ${PG_FORMAT} \
     --env-name "${ENV_NAME}"

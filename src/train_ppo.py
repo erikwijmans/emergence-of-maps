@@ -164,6 +164,8 @@ def construct_envs(args):
         config_env.TASK.POINTGOAL_SENSOR.SENSOR_DIMENSIONS = (
             args.pointgoal_sensor_dimensions
         )
+        config_env.TASK.POINTGOAL_SENSOR.GOAL_FORMAT = \
+            args.pointgoal_sensor_format
 
         agent_sensors = [
             s for s in args.sensors.strip().split(",") if len(s) > 0

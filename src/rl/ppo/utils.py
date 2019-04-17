@@ -443,6 +443,11 @@ def ppo_args():
         type=int,
         choices=[2, 3]
     )
+    parser.add_argument(
+        "--pointgoal-sensor-format",
+        type=str,
+        choices=["CARTESIAN", "POLAR"]
+    )
     parser.add_argument("--use-aux-losses", type=int, default=0)
     parser.add_argument(
         "--rnn-type",
