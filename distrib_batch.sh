@@ -3,7 +3,7 @@
 #SBATCH --output=/checkpoint/%u/jobs/job.%j.out
 #SBATCH --error=/checkpoint/%u/jobs/job.%j.err
 #SBATCH --gres gpu:8
-#SBATCH --nodes 4
+#SBATCH --nodes 8
 #SBATCH --cpus-per-task 10
 #SBATCH --ntasks-per-node 8
 #SBATCH --mem=400GB
@@ -29,7 +29,9 @@ then
     conda deactivate
     conda activate hsim
     BASE_EXP_DIR="/checkpoint/erikwijmans/exp-dir"
-    CHECKPOINT="data/checkpoints/gibson_depth_1k"
+    EXP_DIR="${BASE_EXP_DIR}/exp_habitat_api_navigation_analysis_datetime_${CURRENT_DATETIME}"
+    mkdir -p ${EXP_DIR}
+    CHECKPOINT="data/checkpoints/gibson_depth_1k_3D"
 fi
 
 ENV_NAME="pointnav_gibson_depth"
