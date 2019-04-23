@@ -115,6 +115,7 @@ def main():
     if WORLD_RANK == 0 and not os.path.isdir(args.checkpoint_folder):
         os.makedirs(args.checkpoint_folder)
 
+    if WORLD_RANK == 0:
         for p in sorted(list(vars(args))):
             logger.info("{}: {}".format(p, getattr(args, p)))
 
