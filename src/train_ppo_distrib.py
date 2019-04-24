@@ -110,14 +110,8 @@ def main():
 
     args.sim_gpu_id = args.local_rank
 
-    logger.add_filehandler(args.log_file)
-
     if WORLD_RANK == 0 and not os.path.isdir(args.checkpoint_folder):
         os.makedirs(args.checkpoint_folder)
-
-    if WORLD_RANK == 0:
-        for p in sorted(list(vars(args))):
-            logger.info("{}: {}".format(p, getattr(args, p)))
 
     with construct_envs(args) as envs:
 
@@ -165,6 +159,8 @@ def main():
             update_start_from = ckpt["extra"]["update"]
             prev_time = ckpt["extra"]["prev_time"]
 
+        logger.add_filehandler(args.log_file)
+
         agent.init_distributed()
         actor_critic = agent.actor_critic
 
@@ -173,6 +169,13 @@ def main():
                 sum(param.numel() for param in actor_critic.parameters())
             )
         )
+
+        if WORLD_RANK == 0:
+            logger.info("-" * 50)
+            logger.info("args:")
+            for p in sorted(list(vars(args))):
+                logger.info("{}: {}".format(p, getattr(args, p)))
+            logger.info("-" * 50)
 
         observations = envs.reset()
 
@@ -276,9 +279,14 @@ def main():
                     episode_counts += 1.0 - masks
                     current_episode_reward *= masks
 
+                    if args.nav_task == "pointnav":
+                        key_spl = "spl"
+                    else:
+                        key_spl = "loop_spl"
+
                     episode_spls += torch.tensor(
                         [
-                            [info["spl"]] if done else [0.0]
+                            [info[key_spl]] if done else [0.0]
                             for info, done in zip(infos, dones)
                         ],
                         dtype=torch.float,
@@ -286,7 +294,7 @@ def main():
                     )
                     episode_successes += torch.tensor(
                         [
-                            [1.0] if done and info["spl"] > 0 else [0.0]
+                            [1.0] if done and info[key_spl] > 0 else [0.0]
                             for info, done in zip(infos, dones)
                         ],
                         dtype=torch.float,
@@ -345,7 +353,7 @@ def main():
 
                 if tb_enabled:
                     stats = zip(
-                        ["count", "reward", "spl", "success"],
+                        ["count", "reward", key_spl, "success"],
                         [
                             window_episode_counts,
                             window_episode_reward,
@@ -372,7 +380,7 @@ def main():
                         "metrics",
                         {
                             k: deltas[k] / deltas["count"]
-                            for k in ["spl", "success"]
+                            for k in [key_spl, "success"]
                         },
                         count_steps,
                     )
@@ -438,9 +446,10 @@ def main():
 
                         if window_counts > 0:
                             logger.info(
-                                "Average window size {} reward: {:3f}\tspl: {:3f}\t success: {:3f}".format(
+                                "Average window size {} reward: {:3f}\t{}: {:3f}\t success: {:3f}".format(
                                     len(window_episode_reward),
                                     (window_rewards / window_counts).item(),
+                                    key_spl,
                                     (window_spl / window_counts).item(),
                                     (window_successes / window_counts).item(),
                                 )

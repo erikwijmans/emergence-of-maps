@@ -448,6 +448,12 @@ def ppo_args():
         type=str,
         choices=["CARTESIAN", "POLAR"]
     )
+    parser.add_argument(
+        "--nav-task",
+        type=str,
+        required=True,
+        choices=["pointnav", "loopnav"]
+    )
     parser.add_argument("--use-aux-losses", type=int, default=0)
     parser.add_argument(
         "--rnn-type",
@@ -457,5 +463,8 @@ def ppo_args():
     )
     parser.add_argument("--env-name", type=str, default=None)
     parser.add_argument("--noise-truncate", type=float, default=0.0)
+    parser.add_argument("--max-episode-timesteps", type=int, required=True)
+    parser.add_argument("--load-ckpt", default=None,
+                        help="path to load checkpoint from")
 
     return parser
