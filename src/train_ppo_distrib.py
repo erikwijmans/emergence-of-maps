@@ -113,6 +113,9 @@ def main():
     if WORLD_RANK == 0 and not os.path.isdir(args.checkpoint_folder):
         os.makedirs(args.checkpoint_folder)
 
+    if WORLD_RANK == 0:
+        logger.add_filehandler(args.log_file)
+
     with construct_envs(args) as envs:
 
         num_recurrent_layers = args.num_recurrent_layers
@@ -158,8 +161,6 @@ def main():
             count_checkpoints = ckpt["extra"]["count_checkpoints"]
             update_start_from = ckpt["extra"]["update"]
             prev_time = ckpt["extra"]["prev_time"]
-
-        logger.add_filehandler(args.log_file)
 
         agent.init_distributed()
         actor_critic = agent.actor_critic
