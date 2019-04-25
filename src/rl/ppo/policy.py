@@ -26,6 +26,7 @@ class Policy(nn.Module):
         blind=0,
         use_aux_losses=True,
         rnn_type="GRU",
+        resnet_baseplanes=32,
     ):
         super().__init__()
         self.dim_actions = action_space.n
@@ -36,6 +37,7 @@ class Policy(nn.Module):
             num_recurrent_layers=num_recurrent_layers,
             blind=blind,
             rnn_type=rnn_type,
+            resnet_baseplanes=resnet_baseplanes,
         )
 
         self.action_distribution = CategoricalNet(
@@ -185,6 +187,7 @@ class Net(nn.Module):
         num_recurrent_layers,
         blind,
         rnn_type,
+        resnet_baseplanes,
     ):
         super().__init__()
 
@@ -223,7 +226,10 @@ class Net(nn.Module):
         if not blind:
             assert self._n_input_depth + self._n_input_rgb > 0
             encoder = ResNetEncoder(
-                self._n_input_depth + self._n_input_rgb, 32, 16, spatial_size
+                self._n_input_depth + self._n_input_rgb,
+                resnet_baseplanes,
+                resnet_baseplanes // 2,
+                spatial_size,
             )
             self.cnn = nn.Sequential(
                 encoder,

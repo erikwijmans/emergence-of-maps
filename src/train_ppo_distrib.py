@@ -127,6 +127,7 @@ def main():
             blind=args.blind,
             use_aux_losses=args.use_aux_losses,
             rnn_type=args.rnn_type,
+            resnet_baseplanes=args.resnet_baseplanes,
         )
         actor_critic.to(device)
 
