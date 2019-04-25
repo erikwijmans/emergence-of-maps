@@ -101,6 +101,7 @@ class NavRLEnv(habitat.RLEnv):
 
         if self._env.episode_over or self._episode_success():
             done = True
+
         return done
 
     def get_info(self, observations):
@@ -118,6 +119,128 @@ class NavRLEnv(habitat.RLEnv):
         return info
 
 
+class LoopNavRLEnv(NavRLEnv):
+    def __init__(self, config_env, config_baseline, dataset):
+        self._current_target = None
+        self._episode_stage = None
+        self._stages_successful = []
+        super().__init__(config_env, config_baseline, dataset)
+
+    def reset(self):
+        self._episode_stage = 0
+        self._stages_successful = [False, False]
+        output = super().reset()
+        self._current_target = self._env.current_episode.goals[0].position
+        return output
+
+    def step(self, action):
+        self._previous_action = action
+
+        curr_episode_over = False
+
+        if action == SIM_NAME_TO_ACTION[SimulatorActions.STOP.value]:
+            if self._episode_stage == 0:
+                self._current_target = self._env.current_episode.start_position
+
+                if self._previous_target_distance < \
+                        self._config_env.SUCCESS_DISTANCE:
+                    # zeroth stage is successful
+                    self._stages_successful[0] = True
+
+                else:
+                    curr_episode_over = True
+
+                # swap start position and goal for stage-1
+                self._env.current_episode.start_position, \
+                    self._env.current_episode.goals[0].position =\
+                    self._env.current_episode.goals[0].position, \
+                    self._env.current_episode.start_position
+
+                self._previous_target_distance = self._distance_target()
+            else:
+                curr_episode_over = True
+
+                if self._previous_target_distance < \
+                        self._config_env.SUCCESS_DISTANCE:
+                    self._stages_successful[1] = True
+
+        observations, reward, done, info = super().step(action)
+
+        # update episode stage
+        if action == SIM_NAME_TO_ACTION[SimulatorActions.STOP.value] and \
+                self._episode_stage == 0:
+            self._episode_stage = 1
+
+        if curr_episode_over:
+            done = True
+            self._env.episode_over = True
+
+        return observations, reward, done, info
+
+    def get_reward(self, observations):
+        reward = self._config_baseline.BASELINE.RL.SLACK_REWARD
+
+        current_target_distance = self._distance_target()
+
+        # check for infinity geodesic distance
+        self._current_target_distance = current_target_distance
+        if not (-100 <= self._current_target_distance <= 1000):
+            logger.info("Infinite geodesic distance observed in get_reward")
+            return 0.0
+
+        reward += self._previous_target_distance - current_target_distance
+        self._previous_target_distance = current_target_distance
+
+        if self._episode_success():
+            # TODO(akadian): multiply by second episode SPL
+            reward = (
+                self._config_baseline.BASELINE.RL.SUCCESS_REWARD
+            )
+        elif self._previous_action == SIM_NAME_TO_ACTION[
+                SimulatorActions.STOP.value] and self._stages_successful[0] \
+                and self._episode_stage == 0:
+            # TODO(akadian): multiply by first episode SPL
+            reward = (
+                self._config_baseline.BASELINE.RL.SUCCESS_REWARD
+            )
+
+        return reward
+
+    def _episode_success(self):
+        if (
+            self._episode_stage == 1 and
+            self._previous_action
+            == SIM_NAME_TO_ACTION[SimulatorActions.STOP.value] and
+            self._distance_target() < self._config_env.SUCCESS_DISTANCE and
+            self._stages_successful[0]
+        ):
+            return True
+        return False
+
+    def get_done(self, observations):
+        done = False
+
+        # check for infinity geodesic distance
+        if not (-100 <= self._current_target_distance <= 100):
+            logger.info("Infinite geodesic distance observed in get_done")
+            return True
+
+        if self._env.episode_over or self._episode_success():
+            done = True
+
+        return done
+
+    def get_info(self, observations):
+        info = self.habitat_env.get_metrics()
+
+        # check for infinity geodesic distance
+        if not (-100 <= self._current_target_distance <= 100):
+            info["loop_spl"] = 0.0
+            logger.info("Infinite geodesic distance observed in get_info")
+
+        return info
+
+
 def make_env_fn(config_env, config_baseline, shuffle_interval, rank):
     dataset = make_dataset(config_env.DATASET.TYPE, config=config_env.DATASET)
     try:
@@ -127,10 +250,22 @@ def make_env_fn(config_env, config_baseline, shuffle_interval, rank):
     config_env.defrost()
     config_env.SIMULATOR.SCENE = dataset.episodes[0].scene_id
     config_env.freeze()
-    env = NavRLEnv(
-        config_env=config_env, config_baseline=config_baseline, dataset=dataset
-    )
+
+    if config_env.SIMULATOR.AGENT_0.TURNAROUND:
+        env = LoopNavRLEnv(
+            config_env=config_env,
+            config_baseline=config_baseline,
+            dataset=dataset
+        )
+    else:
+        env = NavRLEnv(
+            config_env=config_env,
+            config_baseline=config_baseline,
+            dataset=dataset
+        )
+
     env.seed(rank)
+
     return env
 
 
@@ -185,6 +320,15 @@ def construct_envs(args):
             config_env.SIMULATOR.RGB_SENSOR.HEIGHT = 2
             config_env.SIMULATOR.RGB_SENSOR.WIDTH = 2
 
+        config_env.SIMULATOR.AGENT_0.TURNAROUND = (args.nav_task == "loopnav")
+
+        if args.nav_task == "loopnav":
+            config_env.TASK.MEASUREMENTS = ["LOOPSPL"]
+        else:
+            config_env.TASK.MEASUREMENTS = ["SPL"]
+
+        config_env.ENVIRONMENT.MAX_EPISODE_STEPS = args.max_episode_timesteps
+
         config_env.freeze()
         env_configs.append(config_env)
 
@@ -231,8 +375,11 @@ def main():
     actor_critic = Policy(
         observation_space=envs.observation_spaces[0],
         action_space=envs.action_spaces[0],
-        net=args.net,
         hidden_size=args.hidden_size,
+        num_recurrent_layers=1,
+        blind=0,
+        use_aux_losses=0,
+        rnn_type="LSTM"
     )
     actor_critic.to(device)
 

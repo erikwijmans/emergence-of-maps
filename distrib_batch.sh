@@ -31,16 +31,20 @@ then
     BASE_EXP_DIR="/checkpoint/erikwijmans/exp-dir"
     EXP_DIR="${BASE_EXP_DIR}/exp_habitat_api_navigation_analysis_datetime_${CURRENT_DATETIME}"
     mkdir -p ${EXP_DIR}
-    CHECKPOINT="data/checkpoints/gibson_depth_1k_3D"
+    CHECKPOINT="data/checkpoints/gibson-challenge-mp3d-gibson"
 fi
 
-ENV_NAME="pointnav_gibson_depth"
+ENV_NAME="gibson-challenge-mp3d-gibson"
 SENSORS="DEPTH_SENSOR"
 PG_SENSOR_TYPE="DENSE"
 PG_SENSOR_DIMENSIONS=3
-PG_FORMAT="CARTESIAN"
-BLIND=0
+PG_FORMAT="POLAR"
 RNN_TYPE="LSTM"
+NAV_TASK="pointnav"
+MAX_EPISODE_TIMESTEPS=2000
+
+BLIND=0
+NUM_STEPS=128
 
 module purge
 module load cuda/10.0
@@ -63,7 +67,7 @@ srun python -u src/train_ppo_distrib.py \
     --clip-param 0.1 \
     --value-loss-coef 0.5 \
     --num-processes 4 \
-    --num-steps 128 \
+    --num-steps ${NUM_STEPS} \
     --num-mini-batch 2 \
     --ppo-epoch 2  \
     --num-updates 1000000 \
@@ -84,4 +88,7 @@ srun python -u src/train_ppo_distrib.py \
     --pointgoal-sensor-type "${PG_SENSOR_TYPE}" \
     --pointgoal-sensor-dimensions ${PG_SENSOR_DIMENSIONS} \
     --pointgoal-sensor-format ${PG_FORMAT} \
-    --env-name "${ENV_NAME}"
+    --env-name "${ENV_NAME}" \
+    --nav-task "${NAV_TASK}" \
+    --max-episode-timesteps ${MAX_EPISODE_TIMESTEPS} \
+    --resnet-baseplanes 32
