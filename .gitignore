@@ -90,3 +90,4 @@ pyproject.toml
 /data/
 runs/
 *.log
+.autoenv*
