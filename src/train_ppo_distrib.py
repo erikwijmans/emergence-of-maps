@@ -110,11 +110,13 @@ def main():
 
     args.sim_gpu_id = args.local_rank
 
+    checkpoint_folder = args.checkpoint_folder
     if WORLD_RANK == 0 and not os.path.isdir(args.checkpoint_folder):
         os.makedirs(args.checkpoint_folder)
 
+    output_log_file = args.log_file
     if WORLD_RANK == 0:
-        logger.add_filehandler(args.log_file)
+        logger.add_filehandler(output_log_file)
 
     with construct_envs(args) as envs:
 
@@ -162,6 +164,12 @@ def main():
             count_checkpoints = ckpt["extra"]["count_checkpoints"]
             update_start_from = ckpt["extra"]["update"]
             prev_time = ckpt["extra"]["prev_time"]
+            output_log_file = ckpt["extra"]["output_log_file"]
+            checkpoint_folder = ckpt["extra"]["checkpoint_folder"]
+
+            if WORLD_RANK == 0:
+                logger.add_filehandler(output_log_file)
+                logger.info("Starting requeued job")
 
         agent.init_distributed()
         actor_critic = agent.actor_critic
@@ -402,11 +410,17 @@ def main():
                         count_checkpoints=count_checkpoints,
                         pth_time=pth_time,
                         env_time=env_time,
+                        output_log_file=output_log_file,
+                        checkpoint_folder=checkpoint_folder
                     )
                     torch.save(checkpoint, STATE_FILE)
 
                 if INTERRUPTED.is_set():
+                    if world_rank == 0:
+                        logger.info("Interrupted, REQUEUE: {}".format(
+                            REQUEUE.is_set()))
                     if world_rank == 0 and REQUEUE.is_set():
+                        logger.info("Saving state for requeue")
                         _save_state()
 
                     return
@@ -471,7 +485,7 @@ def main():
                         torch.save(
                             checkpoint,
                             os.path.join(
-                                args.checkpoint_folder,
+                                checkpoint_folder,
                                 "ckpt.{}.pth".format(count_checkpoints),
                             ),
                         )

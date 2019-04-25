@@ -3,7 +3,7 @@
 #SBATCH --output=/checkpoint/%u/jobs/job.%j.out
 #SBATCH --error=/checkpoint/%u/jobs/job.%j.err
 #SBATCH --gres gpu:8
-#SBATCH --nodes 8
+#SBATCH --nodes 1
 #SBATCH --cpus-per-task 10
 #SBATCH --ntasks-per-node 8
 #SBATCH --mem=400GB
@@ -12,16 +12,15 @@
 #SBATCH --signal=USR1@600
 #SBATCH --open-mode=append
 
-# conda setup
 echo "Using setup for Abhishek"
 source activate navigation-analysis
 CURRENT_DATETIME="`date +%Y_%m_%d_%H_%M_%S`";
-EXP_DIR="/checkpoint/akadian/exp-dir/exp_habitat_api_navigation_analysis_datetime_${CURRENT_DATETIME}"
+EXP_DIR="/checkpoint/akadian/exp-dir/job_${SLURM_JOB_ID}.exp_habitat_api_navigation_analysis_datetime_${CURRENT_DATETIME}"
 CHECKPOINT="${EXP_DIR}/checkpoints"
 mkdir -p ${EXP_DIR}
 mkdir -p ${CHECKPOINT}
 
-ENV_NAME="gibson-challenge-mp3d-gibson"
+ENV_NAME="pointnav_gibson_depth"
 SENSORS="DEPTH_SENSOR"
 PG_SENSOR_TYPE="DENSE"
 PG_SENSOR_DIMENSIONS=3
@@ -29,7 +28,6 @@ PG_FORMAT="POLAR"
 RNN_TYPE="LSTM"
 NAV_TASK="pointnav"
 MAX_EPISODE_TIMESTEPS=2000
-
 BLIND=0
 NUM_STEPS=128
 
@@ -45,6 +43,9 @@ export MAGNUM_LOG=quiet
 
 export MASTER_ADDR=$(srun --ntasks=1 hostname 2>&1 | tail -n1)
 set -x
+
+echo "datetime: ${CURRENT_DATETIME}, slurm job id: ${SLURM_JOB_ID}" > "/checkpoint/akadian/slurm.job.log"
+
 srun python -u src/train_ppo_distrib.py \
     --shuffle-interval 5000 \
     --use-gae \
@@ -78,4 +79,3 @@ srun python -u src/train_ppo_distrib.py \
     --env-name "${ENV_NAME}" \
     --nav-task "${NAV_TASK}" \
     --max-episode-timesteps ${MAX_EPISODE_TIMESTEPS} \
-    --resnet-baseplanes 32
