@@ -439,14 +439,10 @@ def ppo_args():
         choices=["DENSE", "SPARSE"],
     )
     parser.add_argument(
-        "--pointgoal-sensor-dimensions",
-        type=int,
-        choices=[2, 3]
+        "--pointgoal-sensor-dimensions", type=int, choices=[2, 3]
     )
     parser.add_argument(
-        "--pointgoal-sensor-format",
-        type=str,
-        choices=["CARTESIAN", "POLAR"]
+        "--pointgoal-sensor-format", type=str, choices=["CARTESIAN", "POLAR"]
     )
     parser.add_argument("--use-aux-losses", type=int, default=0)
     parser.add_argument(
@@ -457,5 +453,6 @@ def ppo_args():
     )
     parser.add_argument("--env-name", type=str, default=None)
     parser.add_argument("--noise-truncate", type=float, default=0.0)
+    parser.add_argument("--resnet-baseplanes", type=int, default=32)
 
     return parser

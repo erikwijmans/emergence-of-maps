@@ -120,7 +120,10 @@ class NavRLEnv(habitat.RLEnv):
 
 def make_env_fn(config_env, config_baseline, shuffle_interval, rank):
     dataset = make_dataset(config_env.DATASET.TYPE, config=config_env.DATASET)
-    dataset.shuffle_episodes(shuffle_interal=shuffle_interval)
+    try:
+        dataset.shuffle_episodes(shuffle_interal=shuffle_interval)
+    except:
+        pass
     config_env.defrost()
     config_env.SIMULATOR.SCENE = dataset.episodes[0].scene_id
     config_env.freeze()
@@ -164,8 +167,9 @@ def construct_envs(args):
         config_env.TASK.POINTGOAL_SENSOR.SENSOR_DIMENSIONS = (
             args.pointgoal_sensor_dimensions
         )
-        config_env.TASK.POINTGOAL_SENSOR.GOAL_FORMAT = \
+        config_env.TASK.POINTGOAL_SENSOR.GOAL_FORMAT = (
             args.pointgoal_sensor_format
+        )
 
         agent_sensors = [
             s for s in args.sensors.strip().split(",") if len(s) > 0
