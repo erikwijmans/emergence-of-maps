@@ -401,7 +401,8 @@ def main():
                             k: v
                             for k, v in agent.state_dict().items()
                             if "ddp" not in k
-                        }
+                        },
+                        "args": args,
                     }
                     checkpoint["extra"] = dict(
                         prev_time=prev_time + (time() - t_start),
@@ -480,7 +481,8 @@ def main():
                                 k: v
                                 for k, v in agent.state_dict().items()
                                 if "ddp" not in k
-                            }
+                            },
+                            "args": args,
                         }
                         torch.save(
                             checkpoint,

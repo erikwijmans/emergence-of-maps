@@ -3,7 +3,7 @@
 #SBATCH --output=/checkpoint/%u/jobs/job.%j.out
 #SBATCH --error=/checkpoint/%u/jobs/job.%j.err
 #SBATCH --gres gpu:8
-#SBATCH --nodes 1
+#SBATCH --nodes 4
 #SBATCH --cpus-per-task 10
 #SBATCH --ntasks-per-node 8
 #SBATCH --mem=400GB
@@ -26,10 +26,16 @@ PG_SENSOR_TYPE="DENSE"
 PG_SENSOR_DIMENSIONS=3
 PG_FORMAT="POLAR"
 RNN_TYPE="LSTM"
-NAV_TASK="pointnav"
+NAV_TASK="loopnav"
 MAX_EPISODE_TIMESTEPS=2000
-BLIND=0
-NUM_STEPS=128
+BLIND=1
+
+if [ ${BLIND} == 1 ]
+then
+    NUM_STEPS=256
+else
+    NUM_STEPS=128
+fi
 
 module purge
 module load cuda/10.0
@@ -44,7 +50,7 @@ export MAGNUM_LOG=quiet
 export MASTER_ADDR=$(srun --ntasks=1 hostname 2>&1 | tail -n1)
 set -x
 
-echo "datetime: ${CURRENT_DATETIME}, slurm job id: ${SLURM_JOB_ID}" > "/checkpoint/akadian/slurm.job.log"
+echo "datetime: ${CURRENT_DATETIME}, slurm job id: ${SLURM_JOB_ID}, exp-dir: ${EXP_DIR}" > "/checkpoint/akadian/slurm.job.log"
 
 srun python -u src/train_ppo_distrib.py \
     --shuffle-interval 5000 \
