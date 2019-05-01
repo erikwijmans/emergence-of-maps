@@ -11,7 +11,8 @@ import torchvision
 
 from src.rl.ppo.utils import Flatten, CategoricalNet
 from src.rl.resnet import resnet18, resnet50
-from src.rl.layer_norm_lstm import LayerNormLSTM
+
+#  from src.rl.layer_norm_lstm import LayerNormLSTM
 
 import numpy as np
 
@@ -193,7 +194,7 @@ class Net(nn.Module):
 
         if "rgb" in observation_space.spaces:
             self._n_input_rgb = observation_space.spaces["rgb"].shape[2]
-            self._n_input_rgb = 3
+            self._n_input_rgb = 1
             self.register_buffer(
                 "grayscale_kernel",
                 torch.tensor(
@@ -373,9 +374,9 @@ class Net(nn.Module):
             # permute tensor to dimension [BATCH x CHANNEL x HEIGHT X WIDTH]
             rgb_observations = rgb_observations.permute(0, 3, 1, 2)
             rgb_observations = rgb_observations / 255.0  # normalize RGB
-            #  rgb_observations = F.conv2d(
-            #  rgb_observations, self.grayscale_kernel
-            #  )
+            rgb_observations = F.conv2d(
+                rgb_observations, self.grayscale_kernel
+            )
 
             cnn_input.append(rgb_observations)
 
