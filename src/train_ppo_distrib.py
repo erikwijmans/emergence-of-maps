@@ -440,7 +440,7 @@ def main():
 
                         logger.info(
                             "update: {}\tenv-time: {:.3f}s\tpth-time: {:.3f}s"
-                            "frames: {}".format(
+                            "\tframes: {}".format(
                                 update, env_time, pth_time, count_steps
                             )
                         )

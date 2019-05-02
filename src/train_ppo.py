@@ -13,7 +13,7 @@ import numpy as np
 import torch
 import habitat
 from habitat import logger
-from habitat.sims.habitat_simulator import SimulatorActions, SIM_NAME_TO_ACTION
+from habitat.sims.habitat_simulator import SimulatorActions
 from habitat.config.default import get_config as cfg_env
 from src.config.default import cfg as cfg_baseline
 from habitat.datasets.pointnav.pointnav_dataset import PointNavDatasetV1
@@ -85,7 +85,7 @@ class NavRLEnv(habitat.RLEnv):
     def _episode_success(self):
         if (
             self._previous_action
-            == SIM_NAME_TO_ACTION[SimulatorActions.STOP.value]
+            == SimulatorActions.STOP.value
             and self._distance_target() < self._config_env.SUCCESS_DISTANCE
         ):
             return True
@@ -138,7 +138,7 @@ class LoopNavRLEnv(NavRLEnv):
 
         curr_episode_over = False
 
-        if action == SIM_NAME_TO_ACTION[SimulatorActions.STOP.value]:
+        if action == SimulatorActions.STOP.value:
             if self._episode_stage == 0:
                 self._current_target = self._env.current_episode.start_position
 
@@ -167,7 +167,7 @@ class LoopNavRLEnv(NavRLEnv):
         observations, reward, done, info = super().step(action)
 
         # update episode stage
-        if action == SIM_NAME_TO_ACTION[SimulatorActions.STOP.value] and \
+        if action == SimulatorActions.STOP.value and \
                 self._episode_stage == 0:
             self._episode_stage = 1
 
@@ -196,8 +196,8 @@ class LoopNavRLEnv(NavRLEnv):
             reward = (
                 self._config_baseline.BASELINE.RL.SUCCESS_REWARD
             )
-        elif self._previous_action == SIM_NAME_TO_ACTION[
-                SimulatorActions.STOP.value] and self._stages_successful[0] \
+        elif self._previous_action == SimulatorActions.STOP.value and \
+                self._stages_successful[0] \
                 and self._episode_stage == 0:
             # TODO(akadian): multiply by first episode SPL
             reward = (
@@ -210,7 +210,7 @@ class LoopNavRLEnv(NavRLEnv):
         if (
             self._episode_stage == 1 and
             self._previous_action
-            == SIM_NAME_TO_ACTION[SimulatorActions.STOP.value] and
+            == SimulatorActions.STOP.value and
             self._distance_target() < self._config_env.SUCCESS_DISTANCE and
             self._stages_successful[0]
         ):
