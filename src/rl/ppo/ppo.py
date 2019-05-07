@@ -10,6 +10,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 import torch.distributed as dist
 import numpy as np
+from distutils.version import StrictVersion
 
 
 EPS_PPO = 1e-3
@@ -48,22 +49,31 @@ class PPO(nn.Module):
         self.optimizer = optim.Adam(actor_critic.parameters(), lr=lr, eps=eps)
         self.device = next(self.actor_critic.parameters()).device
         self.normalized_advantage = normalized_advantage
+        self.reducer = None
 
     def init_distributed(self):
-        # DDP's hooks for backwards work regardless of if we actually use it for the forward pass,
-        # so we can just init them and they will do our bidding!
-        # This allows us to leverage all the work done so backdrop and all_reduce can happen
-        # simultaneously
-        self.ddp = torch.nn.parallel.DistributedDataParallel(
-            self.actor_critic,
-            device_ids=[self.device],
-            output_device=self.device,
-        )
+        class Gaurd(object):
+            def __init__(self, module, device):
+                # In pytorch 1.0,
+                # DDP's hooks for backwards work regardless of if we actually use it for the forward pass,
+                # so we can just init them and they will do our bidding!
+                # This allows us to leverage all the work done so backdrop and all_reduce can happen
+                # simultaneously
+                self.ddp = torch.nn.parallel.DistributedDataParallel(
+                    module, device_ids=[device], output_device=device
+                )
 
+        self.ddp = Gaurd(self.actor_critic, self.device)
         self.all_advantages = None
         self.world_size = dist.get_world_size()
 
         self.get_advantages = self._get_advantages_distributed
+
+        torch_version = StrictVersion(torch.__version__)
+        assert torch_version >= StrictVersion("1.0")
+
+        if torch_version >= StrictVersion("1.1"):
+            self.reducer = self.ddp.ddp.reducer
 
     def forward(self, *x):
         raise NotImplementedError
@@ -208,12 +218,21 @@ class PPO(nn.Module):
                     aux_loss = egomotion_loss + gps_loss + delta_pos_loss
 
                 self.optimizer.zero_grad()
-                (
+                total_loss = (
                     value_loss * self.value_loss_coef
                     + action_loss
                     - dist_entropy * self.entropy_coef
                     + aux_loss
-                ).backward()
+                )
+
+                if self.reducer is not None:
+                    find_unused_params = False
+                    if find_unused_params:
+                        self.reducer.prepare_for_backward([total_loss])
+                    else:
+                        self.reducer.prepare_for_backward([])
+
+                total_loss.backward()
 
                 nn.utils.clip_grad_norm_(
                     self.actor_critic.parameters(), self.max_grad_norm

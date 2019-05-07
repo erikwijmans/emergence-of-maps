@@ -142,8 +142,10 @@ class LoopNavRLEnv(NavRLEnv):
             if self._episode_stage == 0:
                 self._current_target = self._env.current_episode.start_position
 
-                if self._previous_target_distance < \
-                        self._config_env.SUCCESS_DISTANCE:
+                if (
+                    self._previous_target_distance
+                    < self._config_env.SUCCESS_DISTANCE
+                ):
                     # zeroth stage is successful
                     self._stages_successful[0] = True
 
@@ -151,17 +153,21 @@ class LoopNavRLEnv(NavRLEnv):
                     curr_episode_over = True
 
                 # swap start position and goal for stage-1
-                self._env.current_episode.start_position, \
-                    self._env.current_episode.goals[0].position =\
-                    self._env.current_episode.goals[0].position, \
-                    self._env.current_episode.start_position
+                self._env.current_episode.start_position, self._env.current_episode.goals[
+                    0
+                ].position = (
+                    self._env.current_episode.goals[0].position,
+                    self._env.current_episode.start_position,
+                )
 
                 self._previous_target_distance = self._distance_target()
             else:
                 curr_episode_over = True
 
-                if self._previous_target_distance < \
-                        self._config_env.SUCCESS_DISTANCE:
+                if (
+                    self._previous_target_distance
+                    < self._config_env.SUCCESS_DISTANCE
+                ):
                     self._stages_successful[1] = True
 
         observations, reward, done, info = super().step(action)
@@ -200,9 +206,7 @@ class LoopNavRLEnv(NavRLEnv):
                 self._stages_successful[0] \
                 and self._episode_stage == 0:
             # TODO(akadian): multiply by first episode SPL
-            reward = (
-                self._config_baseline.BASELINE.RL.SUCCESS_REWARD
-            )
+            reward = self._config_baseline.BASELINE.RL.SUCCESS_REWARD
 
         return reward
 
@@ -255,13 +259,13 @@ def make_env_fn(config_env, config_baseline, shuffle_interval, rank):
         env = LoopNavRLEnv(
             config_env=config_env,
             config_baseline=config_baseline,
-            dataset=dataset
+            dataset=dataset,
         )
     else:
         env = NavRLEnv(
             config_env=config_env,
             config_baseline=config_baseline,
-            dataset=dataset
+            dataset=dataset,
         )
 
     env.seed(rank)
@@ -320,7 +324,7 @@ def construct_envs(args):
             config_env.SIMULATOR.RGB_SENSOR.HEIGHT = 2
             config_env.SIMULATOR.RGB_SENSOR.WIDTH = 2
 
-        config_env.SIMULATOR.AGENT_0.TURNAROUND = (args.nav_task == "loopnav")
+        config_env.SIMULATOR.AGENT_0.TURNAROUND = args.nav_task == "loopnav"
 
         if args.nav_task == "loopnav":
             config_env.TASK.MEASUREMENTS = ["LOOPSPL"]
@@ -379,7 +383,7 @@ def main():
         num_recurrent_layers=1,
         blind=0,
         use_aux_losses=0,
-        rnn_type="LSTM"
+        rnn_type="LSTM",
     )
     actor_critic.to(device)
 
