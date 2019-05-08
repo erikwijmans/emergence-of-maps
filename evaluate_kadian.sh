@@ -30,8 +30,19 @@ CHECKPOINT_MODEL_DIR="/checkpoint/akadian/exp-dir/blind_loopnav_checkpoint/"
 MAX_EPISODE_TIMESTEPS=2000
 TASK_CONFIG="tasks/gibson.pointnav.yaml"
 NAV_TASK="loopnav"
-LOG_FILE="/private/home/akadian/navigation-analysis/navigation-analysis-habitat/evaluate.blind.loopnav.log"
+
+if [ ${NAV_TASK} == "loopnav" ]
+then
+    export LOG_FILE="/private/home/akadian/navigation-analysis/navigation-analysis-habitat/evaluate.blind.loopnav.S_T_S.log"
+else
+    export LOG_FILE="/private/home/akadian/navigation-analysis/navigation-analysis-habitat/evaluate.blind.loopnav.T_S.log"
+    export POSITIONS_FILE="/private/home/akadian/navigation-analysis/navigation-analysis-habitat/sts_episodes.pkl"
+fi
+rm ${LOG_FILE}
+
 COUNT_TEST_EPISODES=1000
+VIDEO=0
+OUT_DIR_VIDEO="/private/home/akadian/navigation-analysis/navigation-analysis-habitat/eval-videos-${NAV_TASK}"
 
 python -u src/evaluate_ppo.py \
     --checkpoint-model-dir ${CHECKPOINT_MODEL_DIR} \
@@ -40,3 +51,7 @@ python -u src/evaluate_ppo.py \
     --num-processes ${NUM_PROCESSES} \
     --log-file ${LOG_FILE} \
     --count-test-episodes ${COUNT_TEST_EPISODES} \
+    --video ${VIDEO} \
+    --out-dir-video ${OUT_DIR_VIDEO} \
+    --nav-task ${NAV_TASK} \
+

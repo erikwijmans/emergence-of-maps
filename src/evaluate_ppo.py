@@ -16,6 +16,8 @@ from src.config.default import cfg as cfg_baseline
 import habitat
 from habitat.config.default import get_config
 
+import imageio
+
 from src.train_ppo import NavRLEnv, LoopNavRLEnv
 from src.rl.ppo import PPO, Policy
 from src.rl.ppo.utils import batch_obs
@@ -23,6 +25,7 @@ import tqdm
 from habitat.datasets.pointnav.pointnav_dataset import PointNavDatasetV1
 from habitat import logger
 from habitat.datasets import make_dataset
+from habitat.utils.visualizations import maps
 
 
 def val_env_fn(config_env, config_baseline, rank):
@@ -49,6 +52,15 @@ def val_env_fn(config_env, config_baseline, rank):
     return env
 
 
+def images_to_video(images, output_dir, video_name):
+    video_name = video_name.replace(" ", "_").replace("\n", "_") + ".mp4"
+    writer = imageio.get_writer(os.path.join(output_dir, video_name), fps=10)
+    for im in tqdm.tqdm(images):
+        writer.append_data(im)
+    writer.close()
+    print("Generated video: {}".format(os.path.join(output_dir, video_name)))
+
+
 def poll_checkpoint_folder(checkpoint_folder, previous_ckpt_ind):
     assert os.path.isdir(checkpoint_folder), "invalid checkpoint folder path"
     models = os.listdir(checkpoint_folder)
@@ -69,8 +81,6 @@ def construct_val_envs(args):
     basic_config.freeze()
 
     scenes = PointNavDatasetV1.get_scenes_to_load(basic_config.DATASET)
-
-    random.shuffle(scenes)
 
     assert len(scenes) >= args.num_processes, (
         "reduce the number of processes as there "
@@ -98,15 +108,20 @@ def construct_val_envs(args):
         config_env.TASK.POINTGOAL_SENSOR.GOAL_FORMAT = (
             args.pointgoal_sensor_format
         )
+        config_env.DATASET.TYPE = "PointNav-v1"
 
         agent_sensors = [
             s for s in args.sensors.strip().split(",") if len(s) > 0
         ]
+
+        if args.video == 1 and "RGB_SENSOR" not in agent_sensors:
+            agent_sensors.append("RGB_SENSOR")
+
         for sensor in agent_sensors:
             assert sensor in ["RGB_SENSOR", "DEPTH_SENSOR"]
         config_env.SIMULATOR.AGENT_0.SENSORS = agent_sensors
 
-        if args.blind:
+        if args.blind and args.video == 0:
             config_env.SIMULATOR.DEPTH_SENSOR.WIDTH = 2
             config_env.SIMULATOR.DEPTH_SENSOR.HEIGHT = 2
 
@@ -121,7 +136,19 @@ def construct_val_envs(args):
         else:
             config_env.TASK.MEASUREMENTS = ["SPL"]
 
+        if args.video == 1:
+            config_env.TASK.MEASUREMENTS.append("TOP_DOWN_MAP")
+            config_env.TASK.MEASUREMENTS.append("COLLISIONS")
+            config_env.SIMULATOR.RGB_SENSOR.WIDTH = 1024
+            config_env.SIMULATOR.RGB_SENSOR.HEIGHT = 1024
+
+            if "DEPTH_SENSOR" in agent_sensors:
+                config_env.SIMULATOR.DEPTH_SENSOR.WIDTH = 1024
+                config_env.SIMULATOR.DEPTH_SENSOR.HEIGHT = 1024
+
         config_env.ENVIRONMENT.MAX_EPISODE_STEPS = args.max_episode_timesteps
+
+        config_env.TASK.VERBOSE = True
 
         config_env.freeze()
         env_configs.append(config_env)
@@ -144,6 +171,10 @@ def construct_val_envs(args):
         )
     )
 
+    if args.video == 1 and args.sensors == "DEPTH_SENSOR":
+        del envs.observation_spaces[0].spaces["rgb"]
+        envs.observation_spaces[0].spaces["depth"].shape = (256, 256, 1)
+
     return envs
 
 
@@ -155,6 +186,11 @@ def main():
     parser.add_argument("--num-processes", type=int, required=True)
     parser.add_argument("--log-file", type=str, required=True)
     parser.add_argument("--count-test-episodes", type=int, required=True)
+    parser.add_argument("--video", type=int, default=0, choices=[0, 1])
+    parser.add_argument("--out-dir-video", type=str)
+    parser.add_argument("--nav-task", type=str, required=True,
+                        choices=["pointnav", "loopnav"])
+    parser.add_argument("--seed", type=int, default=42)
 
     args = parser.parse_args()
 
@@ -162,6 +198,9 @@ def main():
                                     "supported for evaulation"
 
     logger.add_filehandler(args.log_file)
+
+    if args.video == 1:
+        assert args.out_dir_video is not None, "Video dir not specified"
 
     prev_ckpt_ind = -1
 
@@ -176,7 +215,14 @@ def main():
             time.sleep(2)  # sleep for 2 seconds before polling again
 
         logger.info("current_ckpt: {}".format(current_ckpt))
-        time.sleep(5)
+
+        if args.video == 1:
+            rgb_frames = [[]] * args.num_processes
+
+            if not os.path.exists(args.out_dir_video):
+                os.makedirs(args.out_dir_video)
+        else:
+            rgb_frames = None
 
         prev_ckpt_ind += 1
 
@@ -189,16 +235,19 @@ def main():
         trained_args.sim_gpu_ids = args.sim_gpu_ids
         trained_args.pth_gpu_id = args.pth_gpu_id
 
+        trained_args.nav_task = args.nav_task
+
         if trained_args.nav_task == "pointnav":
             key_spl = "spl"
         else:
             key_spl = "loop_spl"
 
+        trained_args.video = args.video
+
         envs = construct_val_envs(trained_args)
 
-        # # TODO(akadian): add seeding functionality
-        # # random.seed(env_configs[0].SEED)
-        # # torch.random.manual_seed(env_configs[0].SEED)
+        random.seed(args.seed)
+        torch.random.manual_seed(args.seed)
 
         torch.backends.cudnn.deterministic = True
 
@@ -233,6 +282,9 @@ def main():
         actor_critic = agent.actor_critic
         actor_critic = actor_critic.to(device)
         actor_critic.eval()
+
+        if trained_args.blind:
+            assert actor_critic.net.cnn is None
 
         observations = envs.reset()
         batch = batch_obs(observations)
@@ -305,6 +357,7 @@ def main():
                         and episode_counts[i] < args.count_test_episodes
                     ):
                         pbar.update()
+                        episode_id = int(episode_counts.sum())
 
                         episode_counts[i] += 1
                         episode_rewards[i] += current_episode_reward[i]
@@ -323,7 +376,7 @@ def main():
                             logger.info("EP {}, S1 SPL: {:.3f}, "
                                         "S2 SPL: {:.3f}, "
                                         "T SPL: {:.3f}".format(
-                                            episode_counts,
+                                            episode_counts[i].item(),
                                             infos[i][key_spl]["stage_1_spl"],
                                             infos[i][key_spl]["stage_2_spl"],
                                             infos[i][key_spl]["total_spl"]))
@@ -335,6 +388,27 @@ def main():
                             logger.info("EP {}, T SPL: {:.3f}".format(
                                 episode_counts, infos[i][key_spl]))
 
+                        if args.video == 1:
+
+                            if isinstance(infos[i][key_spl], dict):
+                                video_name = \
+                                    "{}_{}_spl1_{:.2f}_spl2_{:.2f}".format(
+                                        episode_id, "apt",
+                                        infos[i][key_spl]["stage_1_spl"],
+                                        infos[i][key_spl]["stage_2_spl"]
+                                    )
+                            else:
+                                video_name = "{}_{}_{}_{:.2f}".format(
+                                    episode_id, "apt", key_spl,
+                                    infos[i][key_spl])
+
+                            images_to_video(
+                                rgb_frames[i],
+                                args.out_dir_video,
+                                video_name
+                            )
+                            rgb_frames[i] = []
+
                         pbar.set_postfix(
                             dict(
                                 spl=(
@@ -343,6 +417,51 @@ def main():
                             ),
                             refresh=True,
                         )
+                    elif args.video == 1:
+                        size = observations[i]["rgb"].shape[0]
+                        frame = np.empty((size, 2 * size, 3), dtype=np.uint8)
+                        frame[:, :size] = observations[i]["rgb"][:, :, :3]
+
+                        if infos[i]["collisions"]["is_collision"]:
+                            frame[:, 1024:] = [0, 0, 0]
+
+                            mask = np.ones((frame.shape[0], frame.shape[1]))
+                            mask[30:-30, 30:1024 - 30] = 0
+                            mask = (mask == 1)
+                            alpha = 0.5
+                            frame[mask] = (alpha * np.array([255, 0, 0]) +
+                                           (1.0 - alpha) * frame)[mask]
+
+                        top_down_map = infos[i]["top_down_map"]["map"]
+                        scale = 1024.0 / max(top_down_map.shape)
+                        scale_x = scale_y = scale
+                        top_down_map = maps.lut_top_down_map[top_down_map]
+                        top_down_map = maps.resize_img(
+                            top_down_map, round(scale * top_down_map.shape[0]),
+                            round(scale * top_down_map.shape[1])
+                        )
+
+                        map_agent_pos = \
+                            infos[i]["top_down_map"]["map_agent_pos"]
+                        map_agent_pos[0] = int(map_agent_pos[0] * scale_x)
+                        map_agent_pos[1] = int(map_agent_pos[1] * scale_y)
+                        top_down_map = maps.draw_agent(
+                            top_down_map,
+                            map_agent_pos,
+                            -infos[i]["top_down_map"]["agent_angle"] +
+                            np.pi / 2,
+                            agent_radius_px=7 * 4,
+                        )
+                        if top_down_map.shape[0] > top_down_map.shape[1]:
+                            top_down_map = np.rot90(top_down_map, 1)
+
+                        # white background
+                        frame[:, 1024:] = [255, 255, 255]
+                        frame[
+                            :top_down_map.shape[0],
+                            1024:1024 + top_down_map.shape[1]] = \
+                            top_down_map
+                        rgb_frames[i].append(frame)
 
                 current_episode_reward *= not_done_masks
 

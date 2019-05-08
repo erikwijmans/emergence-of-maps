@@ -30,15 +30,31 @@ class NavRLEnv(habitat.RLEnv):
         self._current_target_distance = None
         self._previous_action = None
         self._episode_distance_covered = None
+
+        if config_env.TASK.VERBOSE is True:
+            logger.add_filehandler(
+                os.environ.get("LOG_FILE"))
+
         super().__init__(config_env, dataset)
 
     def reset(self):
         self._previous_action = None
+
         observations = super().reset()
 
         self._previous_target_distance = self.habitat_env.current_episode.info[
             "geodesic_distance"
         ]
+
+        if self._config_env.VERBOSE is True:
+            agent_state = self._env.sim.get_agent_state()
+            logger.info("CURRENT_EPISODE: {}".format(
+                self._env.current_episode))
+            logger.info("START_POSITION A: {}".format(agent_state.position))
+            logger.info("START_ROTATION A: {}".format(agent_state.rotation))
+            logger.info("GOAL_POSITION A: {}".format(
+                self._env.current_episode.goals[0].position))
+
         return observations
 
     def step(self, action):
@@ -149,6 +165,12 @@ class LoopNavRLEnv(NavRLEnv):
                     # zeroth stage is successful
                     self._stages_successful[0] = True
 
+                    if self._config_env.VERBOSE is True:
+                        agent_state = self._env.sim.get_agent_state()
+                        logger.info("STAGE-1 ENDING_POSITION: {}".format(
+                            agent_state.position))
+                        logger.info("STAGE-1 ENDING_ROTATION: {}".format(
+                            agent_state.rotation))
                 else:
                     curr_episode_over = True
 
@@ -169,6 +191,13 @@ class LoopNavRLEnv(NavRLEnv):
                     < self._config_env.SUCCESS_DISTANCE
                 ):
                     self._stages_successful[1] = True
+
+                    if self._config_env.VERBOSE is True:
+                        agent_state = self._env.sim.get_agent_state()
+                        logger.info("STAGE-2 ENDING_POSITION: {}".format(
+                            agent_state.position))
+                        logger.info("STAGE-2 ENDING_ROTATION: {}".format(
+                            agent_state.rotation))
 
         observations, reward, done, info = super().step(action)
 
