@@ -11,6 +11,7 @@ import random
 import numpy as np
 
 import torch
+from torch.utils.tensorboard import SummaryWriter
 import habitat
 from habitat import logger
 from habitat.sims.habitat_simulator import SimulatorActions
@@ -32,8 +33,7 @@ class NavRLEnv(habitat.RLEnv):
         self._episode_distance_covered = None
 
         if config_env.TASK.VERBOSE is True:
-            logger.add_filehandler(
-                os.environ.get("LOG_FILE"))
+            logger.add_filehandler(os.environ.get("LOG_FILE"))
 
         super().__init__(config_env, dataset)
 
@@ -48,12 +48,16 @@ class NavRLEnv(habitat.RLEnv):
 
         if self._config_env.VERBOSE is True:
             agent_state = self._env.sim.get_agent_state()
-            logger.info("CURRENT_EPISODE: {}".format(
-                self._env.current_episode))
+            logger.info(
+                "CURRENT_EPISODE: {}".format(self._env.current_episode)
+            )
             logger.info("START_POSITION A: {}".format(agent_state.position))
             logger.info("START_ROTATION A: {}".format(agent_state.rotation))
-            logger.info("GOAL_POSITION A: {}".format(
-                self._env.current_episode.goals[0].position))
+            logger.info(
+                "GOAL_POSITION A: {}".format(
+                    self._env.current_episode.goals[0].position
+                )
+            )
 
         return observations
 
@@ -100,8 +104,7 @@ class NavRLEnv(habitat.RLEnv):
 
     def _episode_success(self):
         if (
-            self._previous_action
-            == SimulatorActions.STOP.value
+            self._previous_action == SimulatorActions.STOP.value
             and self._distance_target() < self._config_env.SUCCESS_DISTANCE
         ):
             return True
@@ -167,10 +170,16 @@ class LoopNavRLEnv(NavRLEnv):
 
                     if self._config_env.VERBOSE is True:
                         agent_state = self._env.sim.get_agent_state()
-                        logger.info("STAGE-1 ENDING_POSITION: {}".format(
-                            agent_state.position))
-                        logger.info("STAGE-1 ENDING_ROTATION: {}".format(
-                            agent_state.rotation))
+                        logger.info(
+                            "STAGE-1 ENDING_POSITION: {}".format(
+                                agent_state.position
+                            )
+                        )
+                        logger.info(
+                            "STAGE-1 ENDING_ROTATION: {}".format(
+                                agent_state.rotation
+                            )
+                        )
                 else:
                     curr_episode_over = True
 
@@ -194,16 +203,21 @@ class LoopNavRLEnv(NavRLEnv):
 
                     if self._config_env.VERBOSE is True:
                         agent_state = self._env.sim.get_agent_state()
-                        logger.info("STAGE-2 ENDING_POSITION: {}".format(
-                            agent_state.position))
-                        logger.info("STAGE-2 ENDING_ROTATION: {}".format(
-                            agent_state.rotation))
+                        logger.info(
+                            "STAGE-2 ENDING_POSITION: {}".format(
+                                agent_state.position
+                            )
+                        )
+                        logger.info(
+                            "STAGE-2 ENDING_ROTATION: {}".format(
+                                agent_state.rotation
+                            )
+                        )
 
         observations, reward, done, info = super().step(action)
 
         # update episode stage
-        if action == SimulatorActions.STOP.value and \
-                self._episode_stage == 0:
+        if action == SimulatorActions.STOP.value and self._episode_stage == 0:
             self._episode_stage = 1
 
         if curr_episode_over:
@@ -228,12 +242,12 @@ class LoopNavRLEnv(NavRLEnv):
 
         if self._episode_success():
             # TODO(akadian): multiply by second episode SPL
-            reward = (
-                self._config_baseline.BASELINE.RL.SUCCESS_REWARD
-            )
-        elif self._previous_action == SimulatorActions.STOP.value and \
-                self._stages_successful[0] \
-                and self._episode_stage == 0:
+            reward = self._config_baseline.BASELINE.RL.SUCCESS_REWARD
+        elif (
+            self._previous_action == SimulatorActions.STOP.value
+            and self._stages_successful[0]
+            and self._episode_stage == 0
+        ):
             # TODO(akadian): multiply by first episode SPL
             reward = self._config_baseline.BASELINE.RL.SUCCESS_REWARD
 
@@ -241,11 +255,10 @@ class LoopNavRLEnv(NavRLEnv):
 
     def _episode_success(self):
         if (
-            self._episode_stage == 1 and
-            self._previous_action
-            == SimulatorActions.STOP.value and
-            self._distance_target() < self._config_env.SUCCESS_DISTANCE and
-            self._stages_successful[0]
+            self._episode_stage == 1
+            and self._previous_action == SimulatorActions.STOP.value
+            and self._distance_target() < self._config_env.SUCCESS_DISTANCE
+            and self._stages_successful[0]
         ):
             return True
         return False
@@ -357,6 +370,7 @@ def construct_envs(args):
 
         if args.nav_task == "loopnav":
             config_env.TASK.MEASUREMENTS = ["LOOPSPL"]
+            config_env.TASK.LOOPSPL.BREAKDOWN_METRIC = True
         else:
             config_env.TASK.MEASUREMENTS = ["SPL"]
 

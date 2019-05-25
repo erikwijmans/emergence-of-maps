@@ -30,6 +30,10 @@ CHECKPOINT_MODEL_DIR="/checkpoint/akadian/exp-dir/blind_loopnav_checkpoint/"
 MAX_EPISODE_TIMESTEPS=2000
 TASK_CONFIG="tasks/gibson.pointnav.yaml"
 NAV_TASK="loopnav"
+TENSORBOARD_DIR="/checkpoint/akadian/tensorboard-logs/dummy-eval-${NAV_TASK}"
+COUNT_TEST_EPISODES=1000
+VIDEO=0
+OUT_DIR_VIDEO="/private/home/akadian/navigation-analysis/navigation-analysis-habitat/eval-videos-${NAV_TASK}"
 
 if [ ${NAV_TASK} == "loopnav" ]
 then
@@ -39,10 +43,6 @@ else
     export POSITIONS_FILE="/private/home/akadian/navigation-analysis/navigation-analysis-habitat/sts_episodes.pkl"
 fi
 rm ${LOG_FILE}
-
-COUNT_TEST_EPISODES=1000
-VIDEO=0
-OUT_DIR_VIDEO="/private/home/akadian/navigation-analysis/navigation-analysis-habitat/eval-videos-${NAV_TASK}"
 
 python -u src/evaluate_ppo.py \
     --checkpoint-model-dir ${CHECKPOINT_MODEL_DIR} \
@@ -54,4 +54,4 @@ python -u src/evaluate_ppo.py \
     --video ${VIDEO} \
     --out-dir-video ${OUT_DIR_VIDEO} \
     --nav-task ${NAV_TASK} \
-
+    --tensorboard-dir ${TENSORBOARD_DIR} \

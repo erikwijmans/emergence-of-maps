@@ -3,11 +3,11 @@
 #SBATCH --output=/checkpoint/%u/jobs/job.%j.out
 #SBATCH --error=/checkpoint/%u/jobs/job.%j.err
 #SBATCH --gres gpu:8
-#SBATCH --nodes 4
+#SBATCH --nodes 2
 #SBATCH --cpus-per-task 10
 #SBATCH --ntasks-per-node 8
 #SBATCH --mem=400GB
-#SBATCH --partition=learnfair
+#SBATCH --partition=dev
 #SBATCH --time=24:00:00
 #SBATCH --signal=USR1@600
 #SBATCH --open-mode=append
@@ -20,7 +20,6 @@ CHECKPOINT="${EXP_DIR}/checkpoints"
 mkdir -p ${EXP_DIR}
 mkdir -p ${CHECKPOINT}
 
-ENV_NAME="pointnav_gibson_depth"
 SENSORS="DEPTH_SENSOR"
 PG_SENSOR_TYPE="DENSE"
 PG_SENSOR_DIMENSIONS=3
@@ -29,6 +28,8 @@ RNN_TYPE="LSTM"
 NAV_TASK="loopnav"
 MAX_EPISODE_TIMESTEPS=2000
 BLIND=1
+NUM_PROCESSES=4
+TENSORBOARD_DIR="/checkpoint/akadian/tensorboard-logs/job_${SLURM_JOB_ID}.exp_habitat_api_navigation_analysis_datetime_${CURRENT_DATETIME}"
 
 if [ ${BLIND} == 1 ]
 then
@@ -50,7 +51,7 @@ export MAGNUM_LOG=quiet
 export MASTER_ADDR=$(srun --ntasks=1 hostname 2>&1 | tail -n1)
 set -x
 
-echo "datetime: ${CURRENT_DATETIME}, slurm job id: ${SLURM_JOB_ID}, exp-dir: ${EXP_DIR}" > "/checkpoint/akadian/slurm.job.log"
+echo "datetime: ${CURRENT_DATETIME}, slurm job id: ${SLURM_JOB_ID}, exp-dir: ${EXP_DIR}" >> "/checkpoint/akadian/slurm.job.log"
 
 srun python -u src/train_ppo_distrib.py \
     --shuffle-interval 5000 \
@@ -60,7 +61,7 @@ srun python -u src/train_ppo_distrib.py \
     --lr 2.5e-4 \
     --clip-param 0.1 \
     --value-loss-coef 0.5 \
-    --num-processes 4 \
+    --num-processes ${NUM_PROCESSES} \
     --num-steps ${NUM_STEPS} \
     --num-mini-batch 2 \
     --ppo-epoch 2  \
@@ -70,6 +71,7 @@ srun python -u src/train_ppo_distrib.py \
     --entropy-coef 0.01 \
     --log-file "${EXP_DIR}/train.log" \
     --log-interval 50 \
+    --save-state-interval 50 \
     --checkpoint-folder ${CHECKPOINT} \
     --checkpoint-interval 500 \
     --task-config "tasks/gibson.pointnav.yaml" \
@@ -82,6 +84,6 @@ srun python -u src/train_ppo_distrib.py \
     --pointgoal-sensor-type "${PG_SENSOR_TYPE}" \
     --pointgoal-sensor-dimensions ${PG_SENSOR_DIMENSIONS} \
     --pointgoal-sensor-format ${PG_FORMAT} \
-    --env-name "${ENV_NAME}" \
     --nav-task "${NAV_TASK}" \
     --max-episode-timesteps ${MAX_EPISODE_TIMESTEPS} \
+    --tensorboard-dir ${TENSORBOARD_DIR} \

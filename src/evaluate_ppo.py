@@ -11,6 +11,7 @@ import numpy as np
 import time
 
 import torch
+from torch.utils.tensorboard import SummaryWriter
 from src.config.default import cfg as cfg_baseline
 
 import habitat
@@ -38,13 +39,13 @@ def val_env_fn(config_env, config_baseline, rank):
         env = LoopNavRLEnv(
             config_env=config_env,
             config_baseline=config_baseline,
-            dataset=dataset
+            dataset=dataset,
         )
     else:
         env = NavRLEnv(
             config_env=config_env,
             config_baseline=config_baseline,
-            dataset=dataset
+            dataset=dataset,
         )
 
     env.seed(rank)
@@ -58,7 +59,9 @@ def images_to_video(images, output_dir, video_name):
     for im in tqdm.tqdm(images):
         writer.append_data(im)
     writer.close()
-    print("Generated video: {}".format(os.path.join(output_dir, video_name)))
+    logger.info(
+        "Generated video: {}".format(os.path.join(output_dir, video_name))
+    )
 
 
 def poll_checkpoint_folder(checkpoint_folder, previous_ckpt_ind):
@@ -94,11 +97,20 @@ def construct_val_envs(args):
         config_env.defrost()
 
         config_env.DATASET.SPLIT = "val"
-        config_env.DATASET.POINTNAVV1.CONTENT_SCENES = \
-            scenes[i * scene_split_size: (i + 1) * scene_split_size]
 
-        config_env.SIMULATOR.HABITAT_SIM_V0.GPU_DEVICE_ID = \
-            sim_gpus[i % len(sim_gpus)]
+        # TODO(akadian): use cyclic modulo distribution
+        if i < args.num_processes - 1:
+            config_env.DATASET.POINTNAVV1.CONTENT_SCENES = scenes[
+                i * scene_split_size : (i + 1) * scene_split_size
+            ]
+        else:
+            config_env.DATASET.POINTNAVV1.CONTENT_SCENES = scenes[
+                i * scene_split_size : len(scenes)
+            ]
+
+        config_env.SIMULATOR.HABITAT_SIM_V0.GPU_DEVICE_ID = sim_gpus[
+            i % len(sim_gpus)
+        ]
         config_env.TASK.POINTGOAL_SENSOR.SENSOR_TYPE = (
             args.pointgoal_sensor_type
         )
@@ -128,7 +140,7 @@ def construct_val_envs(args):
             config_env.SIMULATOR.RGB_SENSOR.HEIGHT = 2
             config_env.SIMULATOR.RGB_SENSOR.WIDTH = 2
 
-        config_env.SIMULATOR.AGENT_0.TURNAROUND = (args.nav_task == "loopnav")
+        config_env.SIMULATOR.AGENT_0.TURNAROUND = args.nav_task == "loopnav"
 
         if args.nav_task == "loopnav":
             config_env.TASK.MEASUREMENTS = ["LOOPSPL"]
@@ -148,7 +160,7 @@ def construct_val_envs(args):
 
         config_env.ENVIRONMENT.MAX_EPISODE_STEPS = args.max_episode_timesteps
 
-        config_env.TASK.VERBOSE = True
+        config_env.TASK.VERBOSE = bool(args.nav_env_verbose)
 
         config_env.freeze()
         env_configs.append(config_env)
@@ -162,13 +174,9 @@ def construct_val_envs(args):
         make_env_fn=val_env_fn,
         env_fn_args=tuple(
             tuple(
-                zip(
-                    env_configs,
-                    baseline_configs,
-                    range(args.num_processes),
-                )
+                zip(env_configs, baseline_configs, range(args.num_processes))
             )
-        )
+        ),
     )
 
     if args.video == 1 and args.sensors == "DEPTH_SENSOR":
@@ -188,14 +196,18 @@ def main():
     parser.add_argument("--count-test-episodes", type=int, required=True)
     parser.add_argument("--video", type=int, default=0, choices=[0, 1])
     parser.add_argument("--out-dir-video", type=str)
-    parser.add_argument("--nav-task", type=str, required=True,
-                        choices=["pointnav", "loopnav"])
+    parser.add_argument(
+        "--nav-task", type=str, required=True, choices=["pointnav", "loopnav"]
+    )
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--tensorboard-dir", type=str, required=True)
+    parser.add_argument("--nav-env-verbose", type=int, required=True)
 
     args = parser.parse_args()
 
-    assert args.num_processes == 1, "Currently only single environment is " \
-                                    "supported for evaulation"
+    random.seed(args.seed)
+    torch.random.manual_seed(args.seed)
+    torch.backends.cudnn.deterministic = True
 
     logger.add_filehandler(args.log_file)
 
@@ -204,124 +216,113 @@ def main():
 
     prev_ckpt_ind = -1
 
-    while True:
-        current_ckpt = None
+    with SummaryWriter(log_dir=args.tensorboard_dir) as tb_writer:
 
-        while current_ckpt is None:
-            current_ckpt = poll_checkpoint_folder(
-                args.checkpoint_model_dir, prev_ckpt_ind
+        while True:
+            current_ckpt = None
+            while current_ckpt is None:
+                current_ckpt = poll_checkpoint_folder(
+                    args.checkpoint_model_dir, prev_ckpt_ind
+                )
+                time.sleep(2)  # sleep for 2 seconds before polling again
+
+            logger.info("current_ckpt: {}".format(current_ckpt))
+
+            if args.video == 1:
+                rgb_frames = [[]] * args.num_processes
+                if not os.path.exists(args.out_dir_video):
+                    os.makedirs(args.out_dir_video)
+            else:
+                rgb_frames = None
+
+            prev_ckpt_ind += 1
+
+            trained_ckpt = torch.load(current_ckpt)
+            trained_args = trained_ckpt["args"]
+
+            device = torch.device("cuda:{}".format(args.pth_gpu_id))
+
+            trained_args.num_processes = args.num_processes
+            trained_args.sim_gpu_ids = args.sim_gpu_ids
+            trained_args.pth_gpu_id = args.pth_gpu_id
+
+            trained_args.nav_task = args.nav_task
+
+            if trained_args.nav_task == "pointnav":
+                key_spl = "spl"
+            else:
+                key_spl = "loop_spl"
+
+            trained_args.nav_env_verbose = args.nav_env_verbose
+            trained_args.video = args.video
+
+            envs = construct_val_envs(trained_args)
+
+            actor_critic = Policy(
+                observation_space=envs.observation_spaces[0],
+                action_space=envs.action_spaces[0],
+                hidden_size=trained_args.hidden_size,
+                num_recurrent_layers=trained_args.num_recurrent_layers,
+                blind=trained_args.blind,
+                use_aux_losses=trained_args.use_aux_losses,
+                rnn_type=trained_args.rnn_type,
+                resnet_baseplanes=trained_args.resnet_baseplanes,
             )
 
-            time.sleep(2)  # sleep for 2 seconds before polling again
+            agent = PPO(
+                actor_critic=actor_critic,
+                clip_param=trained_args.clip_param,
+                ppo_epoch=trained_args.ppo_epoch,
+                num_mini_batch=trained_args.num_mini_batch,
+                value_loss_coef=trained_args.value_loss_coef,
+                entropy_coef=trained_args.entropy_coef,
+                lr=trained_args.lr,
+                eps=trained_args.eps,
+                max_grad_norm=trained_args.max_grad_norm,
+            )
 
-        logger.info("current_ckpt: {}".format(current_ckpt))
+            agent.load_state_dict(
+                {
+                    k: v
+                    for k, v in trained_ckpt["state_dict"].items()
+                    if "ddp" not in k
+                }
+            )
 
-        if args.video == 1:
-            rgb_frames = [[]] * args.num_processes
+            actor_critic = agent.actor_critic
+            actor_critic = actor_critic.to(device)
+            actor_critic.eval()
 
-            if not os.path.exists(args.out_dir_video):
-                os.makedirs(args.out_dir_video)
-        else:
-            rgb_frames = None
+            if trained_args.blind:
+                assert actor_critic.net.cnn is None
 
-        prev_ckpt_ind += 1
+            observations = envs.reset()
+            batch = batch_obs(observations)
+            for sensor in batch:
+                batch[sensor] = batch[sensor].to(device)
 
-        trained_ckpt = torch.load(current_ckpt)
-        trained_args = trained_ckpt["args"]
+            current_episode_reward = torch.zeros(
+                envs.num_envs, 1, device=device
+            )
 
-        device = torch.device("cuda:{}".format(args.pth_gpu_id))
+            test_recurrent_hidden_states = torch.zeros(
+                actor_critic.net.num_recurrent_layers,
+                args.num_processes,
+                trained_args.hidden_size,
+                device=device,
+            )
+            not_done_masks = torch.zeros(args.num_processes, 1, device=device)
+            prev_actions = torch.zeros(
+                args.num_processes, 1, device=device, dtype=torch.int64
+            )
 
-        trained_args.num_processes = args.num_processes
-        trained_args.sim_gpu_ids = args.sim_gpu_ids
-        trained_args.pth_gpu_id = args.pth_gpu_id
+            with tqdm.tqdm(total=args.count_test_episodes) as pbar:
+                total_episode_counts = 0
+                stats_episodes = {}
 
-        trained_args.nav_task = args.nav_task
-
-        if trained_args.nav_task == "pointnav":
-            key_spl = "spl"
-        else:
-            key_spl = "loop_spl"
-
-        trained_args.video = args.video
-
-        envs = construct_val_envs(trained_args)
-
-        random.seed(args.seed)
-        torch.random.manual_seed(args.seed)
-
-        torch.backends.cudnn.deterministic = True
-
-        actor_critic = Policy(
-            observation_space=envs.observation_spaces[0],
-            action_space=envs.action_spaces[0],
-            hidden_size=trained_args.hidden_size,
-            num_recurrent_layers=trained_args.num_recurrent_layers,
-            blind=trained_args.blind,
-            use_aux_losses=trained_args.use_aux_losses,
-            rnn_type=trained_args.rnn_type,
-            resnet_baseplanes=trained_args.resnet_baseplanes
-        )
-
-        agent = PPO(
-            actor_critic=actor_critic,
-            clip_param=trained_args.clip_param,
-            ppo_epoch=trained_args.ppo_epoch,
-            num_mini_batch=trained_args.num_mini_batch,
-            value_loss_coef=trained_args.value_loss_coef,
-            entropy_coef=trained_args.entropy_coef,
-            lr=trained_args.lr,
-            eps=trained_args.eps,
-            max_grad_norm=trained_args.max_grad_norm,
-        )
-
-        agent.load_state_dict(
-            {k: v for k, v in trained_ckpt["state_dict"].items()
-             if "ddp" not in k}
-        )
-
-        actor_critic = agent.actor_critic
-        actor_critic = actor_critic.to(device)
-        actor_critic.eval()
-
-        if trained_args.blind:
-            assert actor_critic.net.cnn is None
-
-        observations = envs.reset()
-        batch = batch_obs(observations)
-        for sensor in batch:
-            batch[sensor] = batch[sensor].to(device)
-
-        episode_rewards = torch.zeros(envs.num_envs, 1, device=device)
-        episode_spls = torch.zeros(envs.num_envs, 1, device=device)
-        episode_success = torch.zeros(envs.num_envs, 1, device=device)
-        episode_counts = torch.zeros(envs.num_envs, 1, device=device)
-        current_episode_reward = torch.zeros(envs.num_envs, 1, device=device)
-
-        if key_spl == "loop_spl":
-            episode_spls_stage_1 = torch.zeros(envs.num_envs, 1, device=device)
-            episode_spls_stage_2 = torch.zeros(envs.num_envs, 1, device=device)
-        else:
-            episode_spls_stage_1 = None
-            episode_spls_stage_2 = None
-
-        test_recurrent_hidden_states = torch.zeros(
-            actor_critic.net.num_recurrent_layers,
-            args.num_processes,
-            trained_args.hidden_size,
-            device=device,
-        )
-        not_done_masks = torch.zeros(args.num_processes, 1, device=device)
-        prev_actions = torch.zeros(
-            args.num_processes, 1, device=device, dtype=torch.int64
-        )
-
-        with tqdm.tqdm(total=args.count_test_episodes * envs.num_envs) as pbar:
-            while (
-                episode_counts < args.count_test_episodes
-            ).float().sum().item() > 0:
-                with torch.no_grad():
-                    _, actions, _, test_recurrent_hidden_states = \
-                        actor_critic.act(
+                while total_episode_counts < args.count_test_episodes:
+                    with torch.no_grad():
+                        _, actions, _, test_recurrent_hidden_states = actor_critic.act(
                             batch,
                             test_recurrent_hidden_states,
                             prev_actions,
@@ -329,171 +330,253 @@ def main():
                             deterministic=False,
                         )
 
-                    prev_actions.copy_(actions)
+                        prev_actions.copy_(actions)
 
-                outputs = envs.step([a[0].item() for a in actions])
+                    outputs = envs.step([a[0].item() for a in actions])
 
-                observations, rewards, dones, infos = [
-                    list(x) for x in zip(*outputs)
-                ]
-                batch = batch_obs(observations)
-                for sensor in batch:
-                    batch[sensor] = batch[sensor].to(device)
+                    observations, rewards, dones, infos = [
+                        list(x) for x in zip(*outputs)
+                    ]
+                    batch = batch_obs(observations)
+                    for sensor in batch:
+                        batch[sensor] = batch[sensor].to(device)
 
-                not_done_masks = torch.tensor(
-                    [[0.0] if done else [1.0] for done in dones],
-                    dtype=torch.float,
-                    device=device,
-                )
+                    not_done_masks = torch.tensor(
+                        [[0.0] if done else [1.0] for done in dones],
+                        dtype=torch.float,
+                        device=device,
+                    )
 
-                rewards = torch.tensor(
-                    rewards, dtype=torch.float, device=device
-                ).unsqueeze(1)
-                current_episode_reward += rewards
+                    rewards = torch.tensor(
+                        rewards, dtype=torch.float, device=device
+                    ).unsqueeze(1)
+                    current_episode_reward += rewards
 
-                for i in range(not_done_masks.shape[0]):
-                    if (
-                        not_done_masks[i].item() == 0
-                        and episode_counts[i] < args.count_test_episodes
-                    ):
-                        pbar.update()
-                        episode_id = int(episode_counts.sum())
+                    current_episodes = envs.current_episodes()
 
-                        episode_counts[i] += 1
-                        episode_rewards[i] += current_episode_reward[i]
+                    current_ind_paused = 0
 
-                        if key_spl == "loop_spl":
-                            episode_spls[i] += infos[i][key_spl]["total_spl"]
+                    n_envs = envs.num_envs
 
-                            episode_spls_stage_1[i] += \
-                                infos[i][key_spl]["stage_1_spl"]
-                            episode_spls_stage_2[i] += \
-                                infos[i][key_spl]["stage_2_spl"]
+                    for j in range(n_envs):
+                        i = j - current_ind_paused
 
-                            if infos[i][key_spl]["total_spl"] > 0:
-                                episode_success[i] += 1
+                        if (
+                            not_done_masks[i].item() == 0
+                            and current_episodes[i].episode_id
+                            not in stats_episodes
+                        ):
+                            # new episode ended, record stats
+                            pbar.update()
+                            total_episode_counts += 1
 
-                            logger.info("EP {}, S1 SPL: {:.3f}, "
-                                        "S2 SPL: {:.3f}, "
-                                        "T SPL: {:.3f}".format(
-                                            episode_counts[i].item(),
-                                            infos[i][key_spl]["stage_1_spl"],
-                                            infos[i][key_spl]["stage_2_spl"],
-                                            infos[i][key_spl]["total_spl"]))
-                        else:
-                            episode_spls[i] += infos[i][key_spl]
-                            if infos[i][key_spl] > 0:
-                                episode_success[i] += 1
+                            if key_spl == "loop_spl":
+                                res = {}
+                                for k in infos[i][key_spl]:
+                                    res[k] = infos[i][key_spl][k]
 
-                            logger.info("EP {}, T SPL: {:.3f}".format(
-                                episode_counts, infos[i][key_spl]))
+                                res["success"] = (
+                                    infos[i][key_spl]["total_spl"] > 0
+                                )
 
-                        if args.video == 1:
-
-                            if isinstance(infos[i][key_spl], dict):
-                                video_name = \
-                                    "{}_{}_spl1_{:.2f}_spl2_{:.2f}".format(
-                                        episode_id, "apt",
+                                logger.info(
+                                    "EP {}, S1 SPL: {:.3f}, "
+                                    "S2 SPL: {:.3f}, "
+                                    "T SPL: {:.3f}".format(
+                                        current_episodes[i].episode_id,
                                         infos[i][key_spl]["stage_1_spl"],
-                                        infos[i][key_spl]["stage_2_spl"]
+                                        infos[i][key_spl]["stage_2_spl"],
+                                        infos[i][key_spl]["total_spl"],
                                     )
+                                )
+
+                                logger.info(
+                                    "Num parallel envs: {}".format(
+                                        envs.num_envs
+                                    )
+                                )
+
+                                stats_episodes[
+                                    current_episodes[i].episode_id
+                                ] = res
                             else:
-                                video_name = "{}_{}_{}_{:.2f}".format(
-                                    episode_id, "apt", key_spl,
-                                    infos[i][key_spl])
+                                stats_episodes[
+                                    current_episodes[i].episode_id
+                                ] = {
+                                    key_spl: infos[i][key_spl],
+                                    "success": infos[i][key_spl] > 0,
+                                }
 
-                            images_to_video(
-                                rgb_frames[i],
-                                args.out_dir_video,
-                                video_name
+                                logger.info(
+                                    "EP {}, SPL".format(
+                                        current_episodes[i].episode_id,
+                                        infos[i][key_spl],
+                                    )
+                                )
+
+                            if args.video == 1:
+                                if isinstance(infos[i][key_spl], dict):
+                                    video_name = "{}_{}_spl1_{:.2f}_spl2_{:.2f}".format(
+                                        current_episodes[i].episode_id,
+                                        "apt",
+                                        infos[i][key_spl]["stage_1_spl"],
+                                        infos[i][key_spl]["stage_2_spl"],
+                                    )
+                                else:
+                                    video_name = "{}_{}_{}_{:.2f}".format(
+                                        current_episodes[i].episode_id,
+                                        "apt",
+                                        key_spl,
+                                        infos[i][key_spl],
+                                    )
+
+                                images_to_video(
+                                    rgb_frames[i],
+                                    args.out_dir_video,
+                                    video_name,
+                                )
+                                rgb_frames[i] = []
+
+                        elif not_done_masks[i].item() == 0:
+                            # all episodes for the particular process ended
+                            # pause the environment and resize the model
+                            # inputs and states accordingly
+
+                            state_index = list(range(envs.num_envs))
+                            state_index.pop(i)
+
+                            envs.pause_at(i)
+
+                            # indexing along the batch dimensions
+                            test_recurrent_hidden_states = test_recurrent_hidden_states[
+                                :, state_index
+                            ]
+                            prev_actions = prev_actions[state_index]
+                            not_done_masks = not_done_masks[state_index]
+                            if args.video == 1:
+                                rgb_frames = (
+                                    rgb_frames[:i] + rgb_frames[i + 1 :]
+                                )
+                            current_episode_reward = current_episode_reward[
+                                state_index
+                            ]
+
+                            for k, v in batch.items():
+                                batch[k] = v[state_index]
+
+                            current_ind_paused += 1
+
+                        elif args.video == 1:
+                            # episode continuing, record frames
+                            size = observations[i]["rgb"].shape[0]
+                            frame = np.empty(
+                                (size, 2 * size, 3), dtype=np.uint8
                             )
-                            rgb_frames[i] = []
+                            frame[:, :size] = observations[i]["rgb"][:, :, :3]
 
-                        pbar.set_postfix(
-                            dict(
-                                spl=(
-                                    episode_spls.sum() / episode_counts.sum()
-                                ).item()
-                            ),
-                            refresh=True,
-                        )
-                    elif args.video == 1:
-                        size = observations[i]["rgb"].shape[0]
-                        frame = np.empty((size, 2 * size, 3), dtype=np.uint8)
-                        frame[:, :size] = observations[i]["rgb"][:, :, :3]
+                            if infos[i]["collisions"]["is_collision"]:
+                                frame[:, 1024:] = [0, 0, 0]
 
-                        if infos[i]["collisions"]["is_collision"]:
-                            frame[:, 1024:] = [0, 0, 0]
+                                mask = np.ones(
+                                    (frame.shape[0], frame.shape[1])
+                                )
+                                mask[30:-30, 30 : 1024 - 30] = 0
+                                mask = mask == 1
+                                alpha = 0.5
+                                frame[mask] = (
+                                    alpha * np.array([255, 0, 0])
+                                    + (1.0 - alpha) * frame
+                                )[mask]
 
-                            mask = np.ones((frame.shape[0], frame.shape[1]))
-                            mask[30:-30, 30:1024 - 30] = 0
-                            mask = (mask == 1)
-                            alpha = 0.5
-                            frame[mask] = (alpha * np.array([255, 0, 0]) +
-                                           (1.0 - alpha) * frame)[mask]
+                            top_down_map = infos[i]["top_down_map"]["map"]
+                            scale = 1024.0 / max(top_down_map.shape)
+                            scale_x = scale_y = scale
+                            top_down_map = maps.lut_top_down_map[top_down_map]
+                            top_down_map = maps.resize_img(
+                                top_down_map,
+                                round(scale * top_down_map.shape[0]),
+                                round(scale * top_down_map.shape[1]),
+                            )
 
-                        top_down_map = infos[i]["top_down_map"]["map"]
-                        scale = 1024.0 / max(top_down_map.shape)
-                        scale_x = scale_y = scale
-                        top_down_map = maps.lut_top_down_map[top_down_map]
-                        top_down_map = maps.resize_img(
-                            top_down_map, round(scale * top_down_map.shape[0]),
-                            round(scale * top_down_map.shape[1])
-                        )
+                            map_agent_pos = infos[i]["top_down_map"][
+                                "map_agent_pos"
+                            ]
+                            map_agent_pos[0] = int(map_agent_pos[0] * scale_x)
+                            map_agent_pos[1] = int(map_agent_pos[1] * scale_y)
+                            top_down_map = maps.draw_agent(
+                                top_down_map,
+                                map_agent_pos,
+                                -infos[i]["top_down_map"]["agent_angle"]
+                                + np.pi / 2,
+                                agent_radius_px=7 * 4,
+                            )
+                            if top_down_map.shape[0] > top_down_map.shape[1]:
+                                top_down_map = np.rot90(top_down_map, 1)
 
-                        map_agent_pos = \
-                            infos[i]["top_down_map"]["map_agent_pos"]
-                        map_agent_pos[0] = int(map_agent_pos[0] * scale_x)
-                        map_agent_pos[1] = int(map_agent_pos[1] * scale_y)
-                        top_down_map = maps.draw_agent(
-                            top_down_map,
-                            map_agent_pos,
-                            -infos[i]["top_down_map"]["agent_angle"] +
-                            np.pi / 2,
-                            agent_radius_px=7 * 4,
-                        )
-                        if top_down_map.shape[0] > top_down_map.shape[1]:
-                            top_down_map = np.rot90(top_down_map, 1)
+                            # white background
+                            frame[:, 1024:] = [255, 255, 255]
+                            frame[
+                                : top_down_map.shape[0],
+                                1024 : 1024 + top_down_map.shape[1],
+                            ] = top_down_map
+                            rgb_frames[i].append(frame)
 
-                        # white background
-                        frame[:, 1024:] = [255, 255, 255]
-                        frame[
-                            :top_down_map.shape[0],
-                            1024:1024 + top_down_map.shape[1]] = \
-                            top_down_map
-                        rgb_frames[i].append(frame)
+                    current_episode_reward *= not_done_masks
 
-                current_episode_reward *= not_done_masks
+            logger.info("Checkpoint {} results:".format(current_ckpt))
 
-        episode_reward_mean = (episode_rewards / episode_counts).mean().item()
-        episode_spl_mean = (episode_spls / episode_counts).mean().item()
-        episode_success_mean = (episode_success / episode_counts).mean().item()
+            total_success = 0.0
+            for k, v in stats_episodes.items():
+                if v["success"] is True:
+                    total_success += 1
 
-        logger.info("Checkpoint {} results:".format(current_ckpt))
-        logger.info(
-            "Average episode reward: {:.6f}".format(episode_reward_mean)
-        )
-        logger.info(
-            "Average episode success: {:.6f}".format(episode_success_mean)
-        )
-
-        if key_spl == "loop_spl":
             logger.info(
-                "Average episode stage-1 SPL: {:.6f}".format(
-                    (episode_spls_stage_1 / episode_counts).mean().item()
-                )
-            )
-            logger.info(
-                "Average episode stage-2 SPL: {:.6f}".format(
-                    (episode_spls_stage_2 / episode_counts).mean().item()
+                "Average episode success: {:.6f}".format(
+                    total_success / len(stats_episodes)
                 )
             )
 
-        logger.info(
-            "Average episode {}: {:.6f}".format(key_spl, episode_spl_mean)
-        )
+            if key_spl == "loop_spl":
+                total_stage_1_spl = 0.0
+                total_stage_2_spl = 0.0
 
-        envs.close()
+                for k, v in stats_episodes.items():
+                    total_stage_1_spl += v["stage_1_spl"]
+                    total_stage_2_spl += v["stage_2_spl"]
+
+                avg_stage_1_spl = total_stage_1_spl / len(stats_episodes)
+                avg_stage_2_spl = total_stage_2_spl / len(stats_episodes)
+
+                logger.info(
+                    "Average episode stage-1 SPL: {:.6f}".format(
+                        avg_stage_1_spl
+                    )
+                )
+                logger.info(
+                    "Average episode stage-2 SPL: {:.6f}".format(
+                        avg_stage_2_spl
+                    )
+                )
+
+                tb_writer.add_scalar(
+                    "stage-1 SPL", avg_stage_1_spl, prev_ckpt_ind
+                )
+                tb_writer.add_scalar(
+                    "stage-2 SPL", avg_stage_2_spl, prev_ckpt_ind
+                )
+            else:
+                total_spl = 0.0
+
+                for k, v in stats_episodes.items():
+                    total_spl += v["spl"]
+
+                avg_spl = total_spl / len(stats_episodes)
+
+                logger.info("Average episode SPL: {:.6f}".format(avg_spl))
+
+                tb_writer.add_scalar("SPL", avg_spl, prev_ckpt_ind)
+
+            envs.close()
 
 
 if __name__ == "__main__":
