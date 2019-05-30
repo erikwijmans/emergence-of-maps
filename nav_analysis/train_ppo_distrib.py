@@ -1,27 +1,31 @@
 #!/usr/bin/env python3
 
+import contextlib
+import os
+import os.path as osp
+import random
+import signal
+
 # Copyright (c) Facebook, Inc. and its affiliates.
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
-
-import os
-from time import time, sleep
+import sys
+import threading
 from collections import deque
-import random
+from time import sleep, time
 
 import torch
-from habitat import logger
-from src.rl.ppo import PPO, Policy, RolloutStorage
-from src.rl.ppo.utils import update_linear_schedule, ppo_args, batch_obs
 import torch.distributed as dist
-from src.train_ppo import construct_envs
-import threading
-import os.path as osp
-import signal
-import contextlib
-
 from torch.utils import tensorboard
 
+from habitat import logger
+from nav_analysis.rl.ppo import PPO, Policy, RolloutStorage
+from nav_analysis.rl.ppo.utils import (
+    batch_obs,
+    ppo_args,
+    update_linear_schedule,
+)
+from nav_analysis.train_ppo import construct_envs
 
 torch.backends.cudnn.enabled = True
 torch.backends.cudnn.benchmark = True
@@ -62,6 +66,8 @@ signal.signal(signal.SIGINT, clean_exit_handler)
 
 
 def before_exit():
+    dist.barrier()
+
     if WORLD_RANK != 0:
         return
 
@@ -70,8 +76,6 @@ def before_exit():
     if REQUEUE.is_set():
         print("requeuing job " + os.environ["SLURM_JOB_ID"])
         os.system("scontrol requeue " + os.environ["SLURM_JOB_ID"])
-    elif not REQUEUE.is_set() and osp.exists(STATE_FILE):
-        os.remove(STATE_FILE)
 
 
 def setup_distrib_env():
@@ -133,6 +137,7 @@ def main():
             use_aux_losses=args.use_aux_losses,
             rnn_type=args.rnn_type,
             resnet_baseplanes=args.resnet_baseplanes,
+            backbone=args.backbone,
         )
         actor_critic.to(device)
 
@@ -146,10 +151,12 @@ def main():
             lr=args.lr,
             eps=args.eps,
             max_grad_norm=args.max_grad_norm,
+            weight_decay=args.weight_decay,
         )
 
         env_time = 0
         pth_time = 0
+        sync_time = 0
         count_steps = 0
         count_checkpoints = 0
         update_start_from = 0
@@ -163,6 +170,7 @@ def main():
 
             env_time = ckpt["extra"]["env_time"]
             pth_time = ckpt["extra"]["pth_time"]
+            sync_time = ckpt["extra"]["sync_time"]
             count_steps = ckpt["extra"]["count_steps"]
             count_checkpoints = ckpt["extra"]["count_checkpoints"]
             update_start_from = ckpt["extra"]["update"]
@@ -266,6 +274,7 @@ def main():
                             values,
                             actions,
                             actions_log_probs,
+                            entropy,
                             recurrent_hidden_states,
                         ) = actor_critic.act(
                             step_observation,
@@ -370,11 +379,19 @@ def main():
                         values,
                         rewards,
                         masks,
+                        entropy,
                     )
 
                     count_steps += envs.num_envs * world_size
                     pth_time += time() - t_update_stats
 
+                t_sync = time()
+                dist.barrier()
+                t_sync = torch.tensor(
+                    time() - t_sync, device=device, dtype=torch.float32
+                )
+                dist.all_reduce(t_sync, op=dist.ReduceOp.MAX)
+                sync_time += t_sync.item()
                 if args.nav_task == "pointnav":
                     stats = torch.cat(
                         [
@@ -431,8 +448,31 @@ def main():
                 actor_critic.train()
                 value_loss, action_loss, dist_entropy = agent.update(rollouts)
 
+                losses = torch.tensor(
+                    [value_loss, action_loss, dist_entropy],
+                    device=device,
+                    dtype=torch.float32,
+                )
+                dist.all_reduce(losses)
+                losses /= world_size
+
                 rollouts.after_update()
                 pth_time += time() - t_update_model
+
+                stats = torch.cat(
+                    [
+                        episode_rewards,
+                        episode_spls,
+                        episode_successes,
+                        episode_counts,
+                    ],
+                    1,
+                )
+                dist.all_reduce(stats)
+                window_episode_reward.append(stats[:, 0])
+                window_episode_spl.append(stats[:, 1])
+                window_episode_successes.append(stats[:, 2])
+                window_episode_counts.append(stats[:, 3])
 
                 if tb_enabled:
                     if args.nav_task == "pointnav":
@@ -472,10 +512,33 @@ def main():
                         )
                         for k, v in stats
                     }
+                    deltas["count"] = max(deltas["count"], 1.0)
 
                     writer.add_scalar(
                         "reward",
                         deltas["reward"] / deltas["count"],
+                        count_steps,
+                    )
+
+                    writer.add_scalars(
+                        "metrics",
+                        {
+                            k: deltas[k] / deltas["count"]
+                            for k in [key_spl, "success"]
+                        },
+                        count_steps,
+                    )
+
+                    writer.add_scalars(
+                        "losses",
+                        {
+                            k: l.item() * s
+                            for l, k, s in zip(
+                                losses,
+                                ["value", "policy", "entropy"],
+                                [1, 1, 0.1],
+                            )
+                        },
                         count_steps,
                     )
 
@@ -519,6 +582,7 @@ def main():
                         count_checkpoints=count_checkpoints,
                         pth_time=pth_time,
                         env_time=env_time,
+                        sync_time=sync_time,
                         output_log_file=output_log_file,
                         checkpoint_folder=checkpoint_folder,
                         tensorboard_dir=tensorboard_dir,
@@ -550,9 +614,13 @@ def main():
                         )
 
                         logger.info(
-                            "update: {}\tenv-time: {:.3f}s\tpth-time: {:.3f}s"
+                            "update: {}\tenv-time: {:.3f}s\tpth-time: {:.3f}s\tsync-time: {:.3f}s"
                             "\tframes: {}".format(
-                                update, env_time, pth_time, count_steps
+                                update,
+                                env_time,
+                                pth_time,
+                                sync_time,
+                                count_steps,
                             )
                         )
 

@@ -10,28 +10,22 @@ import os
 import random
 
 import imageio
+import numpy as np
 import torch
 import torch.nn.functional as F
 import tqdm
-from src.config.default import cfg as cfg_baseline
-from src.rl.ppo import PPO, Policy
-from src.rl.ppo.utils import batch_obs
-from train_ppo import make_env_fn
 
 import habitat
 from habitat.config.default import get_config
-import numpy as np
-
-from src.train_ppo import make_env_fn
-from src.rl.ppo import PPO, Policy
-from src.rl.ppo.utils import batch_obs
-import tqdm
 from habitat.datasets.pointnav.pointnav_dataset import PointNavDatasetV1
-
-import numpy as np
 from habitat.tasks.nav.nav_task import NavigationEpisode, NavigationGoal
 from habitat.tasks.visualizations import vis_utils
 from habitat.utils.visualizations import maps
+from nav_analysis.config.default import cfg as cfg_baseline
+from nav_analysis.rl.ppo import PPO, Policy
+from nav_analysis.rl.ppo.utils import batch_obs
+from nav_analysis.train_ppo import make_env_fn
+from train_ppo import make_env_fn
 
 
 def Bug2Agent(object):

@@ -4,17 +4,16 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
 
-from src.rl.ppo.utils import Flatten, CategoricalNet
-from src.rl.resnet import resnet18, resnet50
+import nav_analysis.rl.resnet
+from nav_analysis.rl.ppo.utils import CategoricalNet, Flatten
 
-#  from src.rl.layer_norm_lstm import LayerNormLSTM
-
-import numpy as np
+#  from nav_analysis.rl.layer_norm_lstm import LayerNormLSTM
 
 
 class Policy(nn.Module):
@@ -28,6 +27,7 @@ class Policy(nn.Module):
         use_aux_losses=True,
         rnn_type="GRU",
         resnet_baseplanes=32,
+        backbone="resnet50",
     ):
         super().__init__()
         self.dim_actions = action_space.n
@@ -38,6 +38,7 @@ class Policy(nn.Module):
             num_recurrent_layers=num_recurrent_layers,
             blind=blind,
             rnn_type=rnn_type,
+            backbone=backbone,
             resnet_baseplanes=resnet_baseplanes,
         )
 
@@ -80,7 +81,13 @@ class Policy(nn.Module):
 
         action_log_probs = distribution.log_probs(action)
 
-        return value, action, action_log_probs, rnn_hidden_states
+        return (
+            value,
+            action,
+            action_log_probs,
+            distribution.entropy(),
+            rnn_hidden_states,
+        )
 
     def get_value(self, observations, rnn_hidden_states, prev_actions, masks):
         value, _, _, _ = self.net(
@@ -146,7 +153,7 @@ class ResNetEncoder(nn.Module):
         ngroups=32,
         spatial_size=128,
         flat_output_size=2048,
-        make_backbone=resnet50,
+        make_backbone=None,
     ):
         super().__init__()
 
@@ -188,6 +195,7 @@ class Net(nn.Module):
         num_recurrent_layers,
         blind,
         rnn_type,
+        backbone,
         resnet_baseplanes,
     ):
         super().__init__()
@@ -231,6 +239,7 @@ class Net(nn.Module):
                 resnet_baseplanes,
                 resnet_baseplanes // 2,
                 spatial_size,
+                make_backbone=getattr(nav_analysis.rl.resnet, backbone),
             )
             self.cnn = nn.Sequential(
                 encoder,
@@ -271,18 +280,19 @@ class Net(nn.Module):
 
     def layer_init(self):
         if self.cnn is not None:
-            for layer in self.cnn:
+            for layer in self.cnn.modules():
                 if isinstance(layer, (nn.Conv2d, nn.Linear)):
-                    nn.init.orthogonal_(
+                    nn.init.kaiming_normal_(
                         layer.weight, nn.init.calculate_gain("relu")
                     )
-                    nn.init.constant_(layer.bias, val=0)
+                    if layer.bias is not None:
+                        nn.init.constant_(layer.bias, val=0)
 
-        #  for name, param in self.rnn.named_parameters():
-        #  if "weight" in name:
-        #  nn.init.orthogonal_(param)
-        #  elif "bias" in name:
-        #  nn.init.constant_(param, 0)
+        for name, param in self.rnn.named_parameters():
+            if "weight" in name:
+                nn.init.orthogonal_(param)
+            elif "bias" in name:
+                nn.init.constant_(param, 0)
 
         nn.init.orthogonal_(self.critic_linear.weight, gain=1)
         nn.init.constant_(self.critic_linear.bias, val=0)
@@ -374,8 +384,8 @@ class Net(nn.Module):
             # permute tensor to dimension [BATCH x CHANNEL x HEIGHT X WIDTH]
             rgb_observations = rgb_observations.permute(0, 3, 1, 2)
             rgb_observations = rgb_observations / 255.0  # normalize RGB
-            rgb_observations = F.conv2d(
-                rgb_observations, self.grayscale_kernel
+            rgb_observations = (rgb_observations * self.grayscale_kernel).sum(
+                1, keepdim=True
             )
 
             cnn_input.append(rgb_observations)

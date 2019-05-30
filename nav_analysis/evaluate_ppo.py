@@ -5,28 +5,43 @@
 # LICENSE file in the root directory of this source tree.
 
 import argparse
+import logging
 import os
+import os.path as osp
 import random
-import numpy as np
 import time
-
-import torch
-from torch.utils.tensorboard import SummaryWriter
-from src.config.default import cfg as cfg_baseline
-
-import habitat
-from habitat.config.default import get_config
+import getpass
 
 import imageio
-
-from src.train_ppo import NavRLEnv, LoopNavRLEnv
-from src.rl.ppo import PPO, Policy
-from src.rl.ppo.utils import batch_obs
+import numpy as np
+import torch
+import torch.nn.functional as F
 import tqdm
-from habitat.datasets.pointnav.pointnav_dataset import PointNavDatasetV1
+from torch.utils.tensorboard import SummaryWriter
+
+import habitat
+import nav_analysis
 from habitat import logger
+from habitat.config.default import get_config
 from habitat.datasets import make_dataset
+from habitat.datasets.pointnav.pointnav_dataset import PointNavDatasetV1
 from habitat.utils.visualizations import maps
+from nav_analysis.config.default import cfg as cfg_baseline
+from nav_analysis.rl.ppo import PPO, Policy
+from nav_analysis.rl.ppo.utils import batch_obs
+from nav_analysis.train_ppo import LoopNavRLEnv, NavRLEnv, make_env_fn
+
+CFG_DIR = osp.join(osp.dirname(nav_analysis.__file__), "configs")
+
+
+if getpass.getuser() == "erikwijmans":
+    logger.handlers[-1].setLevel(level=logging.WARNING)
+
+
+class DotDict(dict):
+    __getattr__ = dict.__getitem__
+    __setattr__ = dict.__setitem__
+    __delattr__ = dict.__delitem__
 
 
 def val_env_fn(config_env, config_baseline, rank):
@@ -68,6 +83,9 @@ def poll_checkpoint_folder(checkpoint_folder, previous_ckpt_ind):
     assert os.path.isdir(checkpoint_folder), "invalid checkpoint folder path"
     models = os.listdir(checkpoint_folder)
     models.sort(key=lambda x: int(x.strip().split(".")[1]))
+
+    #  models = list(reversed(models))
+
     ind = previous_ckpt_ind + 1
     if ind < len(models):
         return os.path.join(checkpoint_folder, models[ind])
@@ -78,7 +96,7 @@ def construct_val_envs(args):
     env_configs = []
     baseline_configs = []
 
-    basic_config = get_config(config_file=args.task_config)
+    basic_config = get_config(config_file=args.task_config, config_dir=CFG_DIR)
     basic_config.defrost()
     basic_config.DATASET.SPLIT = "val"
     basic_config.freeze()
@@ -89,24 +107,23 @@ def construct_val_envs(args):
         "reduce the number of processes as there "
         "aren't enough number of scenes"
     )
-    scene_split_size = int(np.floor(len(scenes) / args.num_processes))
+    scene_splits = [[] for _ in range(args.num_processes)]
+    next_split_id = 0
+    for s in scenes:
+        scene_splits[next_split_id].append(s)
+        next_split_id = (next_split_id + 1) % len(scene_splits)
+
+    assert sum(map(len, scene_splits)) == len(scenes)
     sim_gpus = [int(x) for x in args.sim_gpu_ids.strip().split(",")]
 
     for i in range(args.num_processes):
-        config_env = get_config(config_file=args.task_config)
+        config_env = get_config(
+            config_file=args.task_config, config_dir=CFG_DIR
+        )
         config_env.defrost()
 
         config_env.DATASET.SPLIT = "val"
-
-        # TODO(akadian): use cyclic modulo distribution
-        if i < args.num_processes - 1:
-            config_env.DATASET.POINTNAVV1.CONTENT_SCENES = scenes[
-                i * scene_split_size : (i + 1) * scene_split_size
-            ]
-        else:
-            config_env.DATASET.POINTNAVV1.CONTENT_SCENES = scenes[
-                i * scene_split_size : len(scenes)
-            ]
+        config_env.DATASET.POINTNAVV1.CONTENT_SCENES = scene_splits[i]
 
         config_env.SIMULATOR.HABITAT_SIM_V0.GPU_DEVICE_ID = sim_gpus[
             i % len(sim_gpus)
@@ -226,7 +243,7 @@ def main():
                 )
                 time.sleep(2)  # sleep for 2 seconds before polling again
 
-            logger.info("current_ckpt: {}".format(current_ckpt))
+            logger.warning("current_ckpt: {}".format(current_ckpt))
 
             if args.video == 1:
                 rgb_frames = [[]] * args.num_processes
@@ -237,10 +254,11 @@ def main():
 
             prev_ckpt_ind += 1
 
-            trained_ckpt = torch.load(current_ckpt)
-            trained_args = trained_ckpt["args"]
+            device = torch.device("cuda", args.pth_gpu_id)
 
-            device = torch.device("cuda:{}".format(args.pth_gpu_id))
+            trained_ckpt = torch.load(current_ckpt, map_location=device)
+            trained_args = trained_ckpt["args"]
+            trained_args.task_config = "tasks/gibson.pointnav.yaml"
 
             trained_args.num_processes = args.num_processes
             trained_args.sim_gpu_ids = args.sim_gpu_ids
@@ -267,29 +285,16 @@ def main():
                 use_aux_losses=trained_args.use_aux_losses,
                 rnn_type=trained_args.rnn_type,
                 resnet_baseplanes=trained_args.resnet_baseplanes,
+                backbone=trained_args.backbone,
             )
-
-            agent = PPO(
-                actor_critic=actor_critic,
-                clip_param=trained_args.clip_param,
-                ppo_epoch=trained_args.ppo_epoch,
-                num_mini_batch=trained_args.num_mini_batch,
-                value_loss_coef=trained_args.value_loss_coef,
-                entropy_coef=trained_args.entropy_coef,
-                lr=trained_args.lr,
-                eps=trained_args.eps,
-                max_grad_norm=trained_args.max_grad_norm,
-            )
-
-            agent.load_state_dict(
+            actor_critic.load_state_dict(
                 {
-                    k: v
+                    k[len("actor_critic.") :]: v
                     for k, v in trained_ckpt["state_dict"].items()
-                    if "ddp" not in k
+                    if "ddp" not in k and "actor_critic" in k
                 }
             )
 
-            actor_critic = agent.actor_critic
             actor_critic = actor_critic.to(device)
             actor_critic.eval()
 
@@ -321,8 +326,10 @@ def main():
                 stats_episodes = {}
 
                 while total_episode_counts < args.count_test_episodes:
+                    current_episodes = envs.current_episodes()
+
                     with torch.no_grad():
-                        _, actions, _, test_recurrent_hidden_states = actor_critic.act(
+                        _, actions, _, _, test_recurrent_hidden_states = actor_critic.act(
                             batch,
                             test_recurrent_hidden_states,
                             prev_actions,
@@ -352,20 +359,14 @@ def main():
                     ).unsqueeze(1)
                     current_episode_reward += rewards
 
-                    current_episodes = envs.current_episodes()
-
-                    current_ind_paused = 0
-
+                    next_episodes = envs.current_episodes()
+                    envs_to_pause = []
                     n_envs = envs.num_envs
+                    for i in range(n_envs):
+                        if next_episodes[i].episode_id in stats_episodes:
+                            envs_to_pause.append(i)
 
-                    for j in range(n_envs):
-                        i = j - current_ind_paused
-
-                        if (
-                            not_done_masks[i].item() == 0
-                            and current_episodes[i].episode_id
-                            not in stats_episodes
-                        ):
+                        if not_done_masks[i].item() == 0:
                             # new episode ended, record stats
                             pbar.update()
                             total_episode_counts += 1
@@ -437,35 +438,6 @@ def main():
                                 )
                                 rgb_frames[i] = []
 
-                        elif not_done_masks[i].item() == 0:
-                            # all episodes for the particular process ended
-                            # pause the environment and resize the model
-                            # inputs and states accordingly
-
-                            state_index = list(range(envs.num_envs))
-                            state_index.pop(i)
-
-                            envs.pause_at(i)
-
-                            # indexing along the batch dimensions
-                            test_recurrent_hidden_states = test_recurrent_hidden_states[
-                                :, state_index
-                            ]
-                            prev_actions = prev_actions[state_index]
-                            not_done_masks = not_done_masks[state_index]
-                            if args.video == 1:
-                                rgb_frames = (
-                                    rgb_frames[:i] + rgb_frames[i + 1 :]
-                                )
-                            current_episode_reward = current_episode_reward[
-                                state_index
-                            ]
-
-                            for k, v in batch.items():
-                                batch[k] = v[state_index]
-
-                            current_ind_paused += 1
-
                         elif args.video == 1:
                             # episode continuing, record frames
                             size = observations[i]["rgb"].shape[0]
@@ -522,6 +494,35 @@ def main():
                             rgb_frames[i].append(frame)
 
                     current_episode_reward *= not_done_masks
+
+                    if key_spl != "loop_spl":
+                        avg_spl = sum(
+                            map(lambda v: v["spl"], stats_episodes.values())
+                        ) / max(len(stats_episodes), 1.0)
+
+                        pbar.set_postfix(spl=avg_spl)
+
+                    if len(envs_to_pause) > 0:
+                        state_index = list(range(envs.num_envs))
+                        for idx in reversed(envs_to_pause):
+                            state_index.pop(idx)
+                            envs.pause_at(idx)
+
+                        # indexing along the batch dimensions
+                        test_recurrent_hidden_states = test_recurrent_hidden_states[
+                            :, state_index
+                        ]
+                        prev_actions = prev_actions[state_index]
+                        not_done_masks = not_done_masks[state_index]
+                        current_episode_reward = current_episode_reward[
+                            state_index
+                        ]
+
+                        for k, v in batch.items():
+                            batch[k] = v[state_index]
+
+                        if args.video == 1:
+                            rgb_frames = rgb_frames[state_index]
 
             logger.info("Checkpoint {} results:".format(current_ckpt))
 

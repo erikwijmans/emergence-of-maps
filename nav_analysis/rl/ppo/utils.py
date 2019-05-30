@@ -55,6 +55,7 @@ def _flatten_helper(t, n, tensor):
 def update_linear_schedule(optimizer, epoch, total_num_epochs, initial_lr):
     """Decreases the learning rate linearly"""
     lr = initial_lr - (initial_lr * (epoch / float(total_num_epochs)))
+
     for param_group in optimizer.param_groups:
         param_group["lr"] = lr
 
@@ -86,6 +87,7 @@ class RolloutStorage:
         )
 
         self.rewards = torch.zeros(num_steps, num_envs, 1)
+        self.entropy = torch.zeros(num_steps, num_envs, 1)
         self.value_preds = torch.zeros(num_steps + 1, num_envs, 1)
         self.returns = torch.zeros(num_steps + 1, num_envs, 1)
 
@@ -118,6 +120,7 @@ class RolloutStorage:
         self.actions = self.actions.to(device)
         self.prev_actions = self.prev_actions.to(device)
         self.masks = self.masks.to(device)
+        self.entropy = self.entropy.to(device)
 
     def insert(
         self,
@@ -128,6 +131,7 @@ class RolloutStorage:
         value_preds,
         rewards,
         masks,
+        entropy,
     ):
         for sensor in observations:
             self.observations[sensor][self.step + 1].copy_(
@@ -141,6 +145,7 @@ class RolloutStorage:
         self.action_log_probs[self.step].copy_(action_log_probs)
         self.value_preds[self.step].copy_(value_preds)
         self.rewards[self.step].copy_(rewards)
+        self.entropy[self.step].copy_(entropy.unsqueeze(-1))
         self.masks[self.step + 1].copy_(masks)
 
         self.step = (self.step + 1) % self.num_steps
@@ -154,12 +159,14 @@ class RolloutStorage:
         self.prev_actions[0].copy_(self.prev_actions[-1])
 
     def compute_returns(self, next_value, use_gae, gamma, tau):
+        max_ent_coeff = 0.0
         if use_gae:
             self.value_preds[-1] = next_value
             gae = 0
             for step in reversed(range(self.rewards.size(0))):
                 delta = (
                     self.rewards[step]
+                    + max_ent_coeff * self.entropy[step]
                     + gamma * self.value_preds[step + 1] * self.masks[step + 1]
                     - self.value_preds[step]
                 )
@@ -171,6 +178,7 @@ class RolloutStorage:
                 self.returns[step] = (
                     self.returns[step + 1] * gamma * self.masks[step + 1]
                     + self.rewards[step]
+                    + max_ent_coeff * self.entropy[step]
                 )
 
     def recurrent_generator(self, advantages, num_mini_batch):
@@ -274,12 +282,10 @@ def batch_obs(observations):
 
     for obs in observations:
         for sensor in obs:
-            batch[sensor].append(obs[sensor])
+            batch[sensor].append(torch.from_numpy(np.array(obs[sensor])))
 
     for sensor in batch:
-        batch[sensor] = torch.tensor(
-            np.array(batch[sensor]), dtype=torch.float
-        )
+        batch[sensor] = torch.stack(batch[sensor]).float()
     return batch
 
 
@@ -466,6 +472,19 @@ def ppo_args():
     parser.add_argument("--max-episode-timesteps", type=int, required=True)
     parser.add_argument(
         "--load-ckpt", default=None, help="path to load checkpoint from"
+    )
+    parser.add_argument("--weight-decay", default=0.0, type=float)
+    parser.add_argument(
+        "--backbone",
+        default="resnet50",
+        choices=[
+            "resnet50",
+            "se_resneXt50",
+            "se_resneXt101",
+            "se_resneXt25",
+            "resnet25",
+            "resneXt25",
+        ],
     )
     parser.add_argument(
         "--tensorboard-dir",

@@ -5,7 +5,7 @@ SIMULATOR:
     SENSORS: ['RGB_SENSOR']
   HABITAT_SIM_V0:
     GPU_DEVICE_ID: 0
-    COMPRESS_TEXTURES: True
+    COMPRESS_TEXTURES: False
   RGB_SENSOR:
     WIDTH: 256
     HEIGHT: 256
@@ -14,7 +14,7 @@ SIMULATOR:
     HEIGHT: 256
 TASK:
   TYPE: Nav-v0
-  SUCCESS_DISTANCE: 0.15
+  SUCCESS_DISTANCE: 0.2
   SENSORS: ['POINTGOAL_SENSOR']
   POINTGOAL_SENSOR:
     TYPE: PointGoalSensor
@@ -23,10 +23,10 @@ TASK:
   MEASUREMENTS: ['SPL']
   SPL:
     TYPE: SPL
-    SUCCESS_DISTANCE: 0.15
+    SUCCESS_DISTANCE: 0.2
 DATASET:
   TYPE: PointNavOTF-v1
   SPLIT: train
   POINTNAVV1:
-    DATA_PATH: 'data/datasets/pointnav/mp3d-gibson-public/v1/{split}/{split}.json.gz'
+    DATA_PATH: 'data/datasets/pointnav/gibson/v1/{split}-all/{split}.json.gz'
     CONTENT_SCENES: ["*"]

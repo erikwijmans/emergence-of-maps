@@ -5,22 +5,31 @@
 # LICENSE file in the root directory of this source tree.
 
 import os
-from time import time
-from collections import deque
+import os.path as osp
 import random
-import numpy as np
+from collections import deque
+from time import time
 
+import numpy as np
 import torch
 from torch.utils.tensorboard import SummaryWriter
+
 import habitat
+import nav_analysis
 from habitat import logger
-from habitat.sims.habitat_simulator import SimulatorActions
 from habitat.config.default import get_config as cfg_env
-from src.config.default import cfg as cfg_baseline
-from habitat.datasets.pointnav.pointnav_dataset import PointNavDatasetV1
 from habitat.datasets import make_dataset
-from src.rl.ppo import PPO, Policy, RolloutStorage
-from src.rl.ppo.utils import update_linear_schedule, ppo_args, batch_obs
+from habitat.datasets.pointnav.pointnav_dataset import PointNavDatasetV1
+from habitat.sims.habitat_simulator import SimulatorActions
+from nav_analysis.config.default import cfg as cfg_baseline
+from nav_analysis.rl.ppo import PPO, Policy, RolloutStorage
+from nav_analysis.rl.ppo.utils import (
+    batch_obs,
+    ppo_args,
+    update_linear_schedule,
+)
+
+CFG_DIR = osp.join(osp.dirname(nav_analysis.__file__), "configs")
 
 
 class NavRLEnv(habitat.RLEnv):
@@ -319,10 +328,11 @@ def construct_envs(args):
     env_configs = []
     baseline_configs = []
 
-    basic_config = cfg_env(config_file=args.task_config)
+    basic_config = cfg_env(config_file=args.task_config, config_dir=CFG_DIR)
 
     scenes = PointNavDatasetV1.get_scenes_to_load(basic_config.DATASET)
 
+    scene_splits = [[] for _ in range(args.num_processes)]
     if len(scenes) > 0:
         random.shuffle(scenes)
 
@@ -330,16 +340,18 @@ def construct_envs(args):
             "reduce the number of processes as there "
             "aren't enough number of scenes"
         )
-        scene_split_size = int(np.floor(len(scenes) / args.num_processes))
+
+        next_split_id = 0
+        for s in scenes:
+            scene_splits[next_split_id].append(s)
+            next_split_id = (next_split_id + 1) % len(scene_splits)
 
     for i in range(args.num_processes):
-        config_env = cfg_env(config_file=args.task_config)
+        config_env = cfg_env(config_file=args.task_config, config_dir=CFG_DIR)
         config_env.defrost()
 
         if len(scenes) > 0:
-            config_env.DATASET.POINTNAVV1.CONTENT_SCENES = scenes[
-                i * scene_split_size : (i + 1) * scene_split_size
-            ]
+            config_env.DATASET.POINTNAVV1.CONTENT_SCENES = scene_splits[i]
 
         config_env.SIMULATOR.HABITAT_SIM_V0.GPU_DEVICE_ID = args.sim_gpu_id
         config_env.TASK.POINTGOAL_SENSOR.SENSOR_TYPE = (
@@ -379,7 +391,7 @@ def construct_envs(args):
         config_env.freeze()
         env_configs.append(config_env)
 
-        config_baseline = cfg_baseline()
+        config_baseline = cfg_baseline(config_dir=CFG_DIR)
         baseline_configs.append(config_baseline)
 
         logger.info("config_env: {}".format(config_env))
