@@ -16,11 +16,7 @@
 echo "Using setup for Erik"
 . /private/home/erikwijmans/miniconda3/etc/profile.d/conda.sh
 conda deactivate
-if [[ ${#} -gt 0 ]]; then
-    conda activate $1
-else
-    conda activate hsim
-fi
+conda activate nav-analysis-base
 
 
 BASE_EXP_DIR="/checkpoint/erikwijmans/exp-dir"
@@ -29,7 +25,7 @@ EXP_DIR="${BASE_EXP_DIR}/exp_habitat_api_navigation_analysis_datetime_${CURRENT_
 mkdir -p ${EXP_DIR}
 ENV_NAME="gibson-challenge-mp3d-gibson-se-neXt25-depth"
 ENV_NAME="gibson-all-se-neXt25-depth"
-ENV_NAME="gibson-public-25-noclip-depth"
+ENV_NAME="gibson-2plus-se-neXt50-long-depth"
 CHECKPOINT="data/checkpoints/${ENV_NAME}"
 
 SENSORS="DEPTH_SENSOR"
@@ -52,9 +48,6 @@ export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu/nvidia-opengl:${LD_LIBRARY_PATH
 export GLOG_minloglevel=2
 export MAGNUM_LOG=quiet
 
-# --use-linear-lr-decay \
-# --use-linear-clip-decay \
-
 export MASTER_ADDR=$(srun --ntasks=1 hostname 2>&1 | tail -n1)
 set -x
 srun python -u -m nav_analysis.train_ppo_distrib \
@@ -69,13 +62,13 @@ srun python -u -m nav_analysis.train_ppo_distrib \
     --num-steps ${NUM_STEPS} \
     --num-mini-batch 2 \
     --ppo-epoch 2 \
-    --num-updates 15500 \
+    --num-updates 75500 \
     --entropy-coef 0.01 \
     --log-file "${EXP_DIR}/train.log" \
     --log-interval 25 \
     --checkpoint-folder ${CHECKPOINT} \
     --checkpoint-interval 200 \
-    --task-config "tasks/gibson-public.pointnav.yaml" \
+    --task-config "tasks/gibson.pointnav.yaml" \
     --sensors ${SENSORS} \
     --num-recurrent-layers 2 \
     --hidden-size 512 \
@@ -89,5 +82,5 @@ srun python -u -m nav_analysis.train_ppo_distrib \
     --max-episode-timesteps ${MAX_EPISODE_TIMESTEPS} \
     --resnet-baseplanes 32 \
     --weight-decay 0.0 \
-    --backbone resnet25 \
+    --backbone se_resneXt50 \
     --tensorboard-dir "runs/${ENV_NAME}"

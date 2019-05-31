@@ -22,11 +22,11 @@ export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu/nvidia-opengl:${LD_LIBRARY_PATH
 export GLOG_minloglevel=2
 export MAGNUM_LOG=quiet
 
-SIM_GPU_IDS="1"
-PTH_GPU_ID="1"
+SIM_GPU_IDS="0"
+PTH_GPU_ID="0"
 SENSOR_TYPES="RGB_SENSOR"
 NUM_PROCESSES=4
-CHECKPOINT_MODEL_DIR="data/checkpoints/gibson-2plus-50-long-depth"
+CHECKPOINT_MODEL_DIR="data/checkpoints/gibson-public-25-noclip-depth"
 ENV_NAME=$(basename ${CHECKPOINT_MODEL_DIR})
 MAX_EPISODE_TIMESTEPS=2000
 TASK_CONFIG="tasks/gibson.pointnav.yaml"

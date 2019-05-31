@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
+# Copyright (c) Facebook, Inc. and its affiliates.
+# This source code is licensed under the MIT license found in the
+# LICENSE file in the root directory of this source tree.
 
 import contextlib
 import os
 import os.path as osp
 import random
 import signal
-
-# Copyright (c) Facebook, Inc. and its affiliates.
-# This source code is licensed under the MIT license found in the
-# LICENSE file in the root directory of this source tree.
 import sys
+
+
 import threading
 from collections import deque
 from time import sleep, time
@@ -26,6 +27,7 @@ from nav_analysis.rl.ppo.utils import (
     update_linear_schedule,
 )
 from nav_analysis.train_ppo import construct_envs
+
 
 torch.backends.cudnn.enabled = True
 torch.backends.cudnn.benchmark = True

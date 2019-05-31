@@ -91,3 +91,4 @@ pyproject.toml
 runs/
 *.log
 .autoenv*
+/sandbox/code
