@@ -22,7 +22,11 @@ from torch.utils import tensorboard
 
 from habitat import logger
 from nav_analysis.rl.ppo import PPO, Policy, RolloutStorage
-from nav_analysis.rl.ppo.utils import batch_obs, ppo_args, update_linear_schedule
+from nav_analysis.rl.ppo.utils import (
+    batch_obs,
+    ppo_args,
+    update_linear_schedule,
+)
 from nav_analysis.train_ppo import construct_envs
 
 
@@ -245,7 +249,9 @@ def main():
 
         tb_enabled = WORLD_RANK == 0
         if tb_enabled:
-            writer_kwargs = dict(log_dir=tensorboard_dir, purge_step=count_steps)
+            writer_kwargs = dict(
+                log_dir=tensorboard_dir, purge_step=count_steps
+            )
 
         with (
             tensorboard.SummaryWriter(**writer_kwargs)
@@ -259,7 +265,9 @@ def main():
                     )
 
                 if args.use_linear_clip_decay:
-                    agent.clip_param = args.clip_param * (1 - update / args.num_updates)
+                    agent.clip_param = args.clip_param * (
+                        1 - update / args.num_updates
+                    )
 
                 actor_critic.eval()
                 for step in range(args.num_steps):
@@ -268,7 +276,8 @@ def main():
                     # sample actions
                     with torch.no_grad():
                         step_observation = {
-                            k: v[step] for k, v in rollouts.observations.items()
+                            k: v[step]
+                            for k, v in rollouts.observations.items()
                         }
 
                         (
@@ -296,7 +305,9 @@ def main():
 
                     t_update_stats = time()
                     batch = batch_obs(observations)
-                    rewards = torch.tensor(rewards, dtype=torch.float, device=device)
+                    rewards = torch.tensor(
+                        rewards, dtype=torch.float, device=device
+                    )
                     rewards = rewards.unsqueeze(1)
 
                     masks = torch.tensor(
@@ -352,14 +363,20 @@ def main():
                         episode_stage_1_spls += torch.tensor(
                             [
                                 [
-                                    [info[key_spl]["stage_1_spl"]] if done else [0.0]
+                                    [info[key_spl]["stage_1_spl"]]
+                                    if done
+                                    else [0.0]
                                     for info, done in zip(infos, dones)
                                 ]
                             ]
                         )
                         episode_stage_2_spls += torch.tensor(
                             [
-                                [[info[key_spl]["stage_2_spl"]] if done else [0.0]]
+                                [
+                                    [info[key_spl]["stage_2_spl"]]
+                                    if done
+                                    else [0.0]
+                                ]
                                 for info, done in zip(infos, dones)
                             ]
                         )
@@ -433,7 +450,9 @@ def main():
                         rollouts.masks[-1],
                     ).detach()
 
-                rollouts.compute_returns(next_value, args.use_gae, args.gamma, args.tau)
+                rollouts.compute_returns(
+                    next_value, args.use_gae, args.gamma, args.tau
+                )
 
                 actor_critic.train()
                 value_loss, action_loss, dist_entropy = agent.update(rollouts)
@@ -450,7 +469,12 @@ def main():
                 pth_time += time() - t_update_model
 
                 stats = torch.cat(
-                    [episode_rewards, episode_spls, episode_successes, episode_counts],
+                    [
+                        episode_rewards,
+                        episode_spls,
+                        episode_successes,
+                        episode_counts,
+                    ],
                     1,
                 )
                 dist.all_reduce(stats)
@@ -500,12 +524,17 @@ def main():
                     deltas["count"] = max(deltas["count"], 1.0)
 
                     writer.add_scalar(
-                        "reward", deltas["reward"] / deltas["count"], count_steps
+                        "reward",
+                        deltas["reward"] / deltas["count"],
+                        count_steps,
                     )
 
                     writer.add_scalars(
                         "metrics",
-                        {k: deltas[k] / deltas["count"] for k in [key_spl, "success"]},
+                        {
+                            k: deltas[k] / deltas["count"]
+                            for k in [key_spl, "success"]
+                        },
                         count_steps,
                     )
 
@@ -514,7 +543,9 @@ def main():
                         {
                             k: l.item() * s
                             for l, k, s in zip(
-                                losses, ["value", "policy", "entropy"], [1, 1, 0.1]
+                                losses,
+                                ["value", "policy", "entropy"],
+                                [1, 1, 0.1],
                             )
                         },
                         count_steps,
@@ -570,7 +601,9 @@ def main():
 
                 if INTERRUPTED.is_set():
                     if world_rank == 0:
-                        logger.info("Interrupted, REQUEUE: {}".format(REQUEUE.is_set()))
+                        logger.info(
+                            "Interrupted, REQUEUE: {}".format(REQUEUE.is_set())
+                        )
                     if world_rank == 0 and REQUEUE.is_set():
                         logger.info("Saving state for requeue")
                         _save_state()
@@ -585,7 +618,8 @@ def main():
                     if update > 0 and update % args.log_interval == 0:
                         logger.info(
                             "update: {}\tfps: {:.3f}".format(
-                                update, count_steps / ((time() - t_start) + prev_time)
+                                update,
+                                count_steps / ((time() - t_start) + prev_time),
                             )
                         )
 
@@ -603,16 +637,19 @@ def main():
                         )
 
                         window_rewards = (
-                            window_episode_reward[-1] - window_episode_reward[0]
+                            window_episode_reward[-1]
+                            - window_episode_reward[0]
                         ).sum()
                         window_spl = (
                             window_episode_spl[-1] - window_episode_spl[0]
                         ).sum()
                         window_successes = (
-                            window_episode_successes[-1] - window_episode_successes[0]
+                            window_episode_successes[-1]
+                            - window_episode_successes[0]
                         ).sum()
                         window_counts = (
-                            window_episode_counts[-1] - window_episode_counts[0]
+                            window_episode_counts[-1]
+                            - window_episode_counts[0]
                         ).sum()
 
                         if args.nav_task == "loopnav":
@@ -632,10 +669,14 @@ def main():
                                     "Average window size {} reward: {:.3f}\t"
                                     "{}: {:.3f}\t success: {:.3f}".format(
                                         len(window_episode_reward),
-                                        (window_rewards / window_counts).item(),
+                                        (
+                                            window_rewards / window_counts
+                                        ).item(),
                                         key_spl,
                                         (window_spl / window_counts).item(),
-                                        (window_successes / window_counts).item(),
+                                        (
+                                            window_successes / window_counts
+                                        ).item(),
                                     )
                                 )
                             else:
@@ -646,11 +687,19 @@ def main():
                                     "loop-spl: {:.3f}\t"
                                     "success: {:.3f}".format(
                                         len(window_episode_reward),
-                                        (window_rewards / window_counts).item(),
-                                        (window_stage_1_spl / window_counts).item(),
-                                        (window_stage_2_spl / window_counts).item(),
+                                        (
+                                            window_rewards / window_counts
+                                        ).item(),
+                                        (
+                                            window_stage_1_spl / window_counts
+                                        ).item(),
+                                        (
+                                            window_stage_2_spl / window_counts
+                                        ).item(),
                                         (window_spl / window_counts).item(),
-                                        (window_successes / window_counts).item(),
+                                        (
+                                            window_successes / window_counts
+                                        ).item(),
                                     )
                                 )
                         else:

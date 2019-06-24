@@ -62,7 +62,12 @@ class Policy(nn.Module):
         return None
 
     def act(
-        self, observations, rnn_hidden_states, prev_actions, masks, deterministic=False
+        self,
+        observations,
+        rnn_hidden_states,
+        prev_actions,
+        masks,
+        deterministic=False,
     ):
         value, actor_features, rnn_hidden_states, _ = self.net(
             observations, rnn_hidden_states, prev_actions, masks
@@ -85,7 +90,9 @@ class Policy(nn.Module):
         )
 
     def get_value(self, observations, rnn_hidden_states, prev_actions, masks):
-        value, _, _, _ = self.net(observations, rnn_hidden_states, prev_actions, masks)
+        value, _, _, _ = self.net(
+            observations, rnn_hidden_states, prev_actions, masks
+        )
         return value
 
     def _unit_circle(self, x):
@@ -152,7 +159,9 @@ class ResNetEncoder(nn.Module):
 
         self.backbone = make_backbone(input_channels, baseplanes, ngroups)
 
-        final_spatial = int(spatial_size * self.backbone.final_spatial_compress)
+        final_spatial = int(
+            spatial_size * self.backbone.final_spatial_compress
+        )
         bn_size = int(round(flat_output_size / (final_spatial ** 2)))
         self.output_size = (bn_size, final_spatial, final_spatial)
 
@@ -196,9 +205,9 @@ class Net(nn.Module):
             self._n_input_rgb = 3
             self.register_buffer(
                 "grayscale_kernel",
-                torch.tensor([0.2126, 0.7152, 0.0722], dtype=torch.float32).view(
-                    1, 3, 1, 1
-                ),
+                torch.tensor(
+                    [0.2126, 0.7152, 0.0722], dtype=torch.float32
+                ).view(1, 3, 1, 1),
             )
             spatial_size = observation_space.spaces["rgb"].shape[0] // 2
         else:
@@ -274,7 +283,9 @@ class Net(nn.Module):
 
     @property
     def num_recurrent_layers(self):
-        return self._num_recurrent_layers * (2 if "LSTM" in self._rnn_type else 1)
+        return self._num_recurrent_layers * (
+            2 if "LSTM" in self._rnn_type else 1
+        )
 
     def layer_init(self):
         if self.cnn is not None:
@@ -297,7 +308,9 @@ class Net(nn.Module):
 
     def _pack_hidden(self, hidden_states):
         if "LSTM" in self._rnn_type:
-            hidden_states = torch.cat([hidden_states[0], hidden_states[1]], dim=0)
+            hidden_states = torch.cat(
+                [hidden_states[0], hidden_states[1]], dim=0
+            )
 
         return hidden_states
 
@@ -322,7 +335,8 @@ class Net(nn.Module):
         if x.size(0) == hidden_states.size(1):
             hidden_states = self._unpack_hidden(hidden_states)
             x, hidden_states = self.rnn(
-                x.unsqueeze(0), self._mask_hidden(hidden_states, masks.unsqueeze(0))
+                x.unsqueeze(0),
+                self._mask_hidden(hidden_states, masks.unsqueeze(0)),
             )
             x = x.squeeze(0)
         else:
@@ -336,7 +350,9 @@ class Net(nn.Module):
 
             # steps in sequence which have zero for any agent. Assume t=0 has
             # a zero in it.
-            has_zeros = (masks[1:] == 0.0).any(dim=-1).nonzero().squeeze().cpu()
+            has_zeros = (
+                (masks[1:] == 0.0).any(dim=-1).nonzero().squeeze().cpu()
+            )
 
             # +1 to correct the masks[1:]
             if has_zeros.dim() == 0:
@@ -356,7 +372,9 @@ class Net(nn.Module):
 
                 rnn_scores, hidden_states = self.rnn(
                     x[start_idx:end_idx],
-                    self._mask_hidden(hidden_states, masks[start_idx].view(1, -1, 1)),
+                    self._mask_hidden(
+                        hidden_states, masks[start_idx].view(1, -1, 1)
+                    ),
                 )
 
                 outputs.append(rnn_scores)
@@ -392,7 +410,9 @@ class Net(nn.Module):
         goal_observations = observations["pointgoal"]
         if self._old_goal_format:
             rho_obs = goal_observations[:, 0].clone()
-            phi_obs = -torch.atan2(goal_observations[:, 2], goal_observations[:, 1])
+            phi_obs = -torch.atan2(
+                goal_observations[:, 2], goal_observations[:, 1]
+            )
             goal_observations = torch.stack([rho_obs, phi_obs], -1)
 
         goal_observations = self.tgt_embed(goal_observations)
@@ -409,7 +429,9 @@ class Net(nn.Module):
                 if self.training:
                     import torch.distributed as distrib
 
-                    new_mean = F.adaptive_avg_pool2d(cnn_input, 1).mean(0, keepdim=True)
+                    new_mean = F.adaptive_avg_pool2d(cnn_input, 1).mean(
+                        0, keepdim=True
+                    )
                     new_count = torch.full_like(self._count, 1)
 
                     if distrib.is_initialized():
@@ -441,9 +463,9 @@ class Net(nn.Module):
                     )
 
                     self._var = M2 / (self._count + new_count)
-                    self._mean = (self._count * self._mean + new_count * new_mean) / (
-                        self._count + new_count
-                    )
+                    self._mean = (
+                        self._count * self._mean + new_count * new_mean
+                    ) / (self._count + new_count)
 
                     self._count += new_count
 

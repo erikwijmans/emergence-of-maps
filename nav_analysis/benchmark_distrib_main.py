@@ -77,7 +77,9 @@ srun --ntasks={NTASKS} --nodes={NNODES} python -u -m nav_analysis.benchmark_dist
 
 def call(cmd):
     cmd = "bash -c '{}'".format(cmd)
-    output = subprocess.check_output(shlex.split(cmd), stderr=open("/dev/null", "w"))
+    output = subprocess.check_output(
+        shlex.split(cmd), stderr=open("/dev/null", "w")
+    )
     return output.decode("utf-8")
 
 
@@ -90,7 +92,11 @@ def main():
 
     for ngpu in gpus:
         params = dict(
-            BACKPROP=0, SEED=0, TASK=MP3D, NTASKS=ngpu, NNODES=max(ngpu // 8, 1)
+            BACKPROP=0,
+            SEED=0,
+            TASK=MP3D,
+            NTASKS=ngpu,
+            NNODES=max(ngpu // 8, 1),
         )
         for _ in tqdm.trange(n_repeats):
             params["SEED"] = random.randint(0, int(1e5))

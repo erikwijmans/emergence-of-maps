@@ -23,7 +23,11 @@ from torch.utils import tensorboard
 
 from habitat import logger
 from nav_analysis.rl.ppo import PPO, Policy, RolloutStorage
-from nav_analysis.rl.ppo.utils import batch_obs, ppo_args, update_linear_schedule
+from nav_analysis.rl.ppo.utils import (
+    batch_obs,
+    ppo_args,
+    update_linear_schedule,
+)
 from nav_analysis.train_ppo import construct_envs
 
 
@@ -139,7 +143,9 @@ def main():
                 )
 
             if args.use_linear_clip_decay:
-                agent.clip_param = args.clip_param * (1 - update / args.num_updates)
+                agent.clip_param = args.clip_param * (
+                    1 - update / args.num_updates
+                )
 
             actor_critic.eval()
             for step in range(args.num_steps):
@@ -150,7 +156,8 @@ def main():
                 if args.backprop:
                     with torch.no_grad():
                         step_observation = {
-                            k: v[step] for k, v in rollouts.observations.items()
+                            k: v[step]
+                            for k, v in rollouts.observations.items()
                         }
 
                         (
@@ -166,14 +173,18 @@ def main():
                             rollouts.masks[step],
                         )
                 else:
-                    actions = torch.randint_like(rollouts.prev_actions[step], 0, 4)
+                    actions = torch.randint_like(
+                        rollouts.prev_actions[step], 0, 4
+                    )
 
                 pth_time += time() - t_sample_action
 
                 t_step_env = time()
 
                 outputs = envs.step([a[0].item() for a in actions])
-                observations, rewards, dones, infos = [list(x) for x in zip(*outputs)]
+                observations, rewards, dones, infos = [
+                    list(x) for x in zip(*outputs)
+                ]
 
                 env_time += time() - t_step_env
 
@@ -182,7 +193,9 @@ def main():
 
                 t_update_stats = time()
                 batch = batch_obs(observations)
-                rewards = torch.tensor(rewards, dtype=torch.float, device=device)
+                rewards = torch.tensor(
+                    rewards, dtype=torch.float, device=device
+                )
                 rewards = rewards.unsqueeze(1)
 
                 masks = torch.tensor(
@@ -206,7 +219,9 @@ def main():
 
             t_sync = time()
             dist.barrier()
-            t_sync = torch.tensor(time() - t_sync, device=device, dtype=torch.float32)
+            t_sync = torch.tensor(
+                time() - t_sync, device=device, dtype=torch.float32
+            )
             dist.all_reduce(t_sync, op=dist.ReduceOp.MAX)
             sync_time += t_sync.item()
 
@@ -224,7 +239,9 @@ def main():
                         rollouts.masks[-1],
                     ).detach()
 
-                rollouts.compute_returns(next_value, args.use_gae, args.gamma, args.tau)
+                rollouts.compute_returns(
+                    next_value, args.use_gae, args.gamma, args.tau
+                )
 
                 actor_critic.train()
                 value_loss, action_loss, dist_entropy = agent.update(rollouts)
