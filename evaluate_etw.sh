@@ -1,16 +1,14 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=navigation-analysis-habitat
+#SBATCH --job-name=navigation-analysis-habitat-eval
 #SBATCH --output=/checkpoint/%u/jobs/job.%j.out
 #SBATCH --error=/checkpoint/%u/jobs/job.%j.err
-#SBATCH --gres gpu:8
+#SBATCH --gres gpu:1
 #SBATCH --nodes 1
 #SBATCH --cpus-per-task 10
-#SBATCH --ntasks-per-node 8
-#SBATCH --mem=400GB
-#SBATCH --partition=learnfair
+#SBATCH --ntasks-per-node 1
+#SBATCH --mem=100GB
+#SBATCH --partition=dev
 #SBATCH --time=24:00:00
-#SBATCH --signal=USR1@600
-#SBATCH --open-mode=append
 
 module purge
 module load cuda/10.0
@@ -26,8 +24,9 @@ SIM_GPU_IDS="0"
 PTH_GPU_ID="0"
 SENSOR_TYPES="RGB_SENSOR"
 NUM_PROCESSES=4
-CHECKPOINT_MODEL_DIR="data/checkpoints/gibson-public-25-noclip-depth"
+CHECKPOINT_MODEL_DIR="data/checkpoints/rgbd_with_norm"
 ENV_NAME=$(basename ${CHECKPOINT_MODEL_DIR})
+# ENV_NAME="testing"
 MAX_EPISODE_TIMESTEPS=2000
 TASK_CONFIG="tasks/gibson.pointnav.yaml"
 NAV_TASK="pointnav"
@@ -36,7 +35,7 @@ if [ ${NAV_TASK} == "loopnav" ]
 then
     echo "FIX ME"
 else
-    export LOG_FILE="/private/home/erikwijmans/projects/navigation-analysis-habitat/data/eval/eval.rgb.pointnav.log"
+    export LOG_FILE="/private/home/erikwijmans/projects/navigation-analysis-habitat/data/eval/eval.${ENV_NAME}.pointnav.log"
     # export LOG_FILE="/private/home/akadian/navigation-analysis/navigation-analysis-habitat/evaluate.blind.loopnav.T_S.log"
     # export POSITIONS_FILE="/private/home/akadian/navigation-analysis/navigation-analysis-habitat/sts_episodes.pkl"
 fi
@@ -46,6 +45,8 @@ COUNT_TEST_EPISODES=994
 VIDEO=0
 OUT_DIR_VIDEO="/private/home/akadian/navigation-analysis/navigation-analysis-habitat/eval-videos-${NAV_TASK}"
 
+# for i in 1 2 4 8 16 32 64 96 128 192 256 512
+# do
 python -u -m nav_analysis.evaluate_ppo \
     --checkpoint-model-dir ${CHECKPOINT_MODEL_DIR} \
     --sim-gpu-ids ${SIM_GPU_IDS} \
@@ -57,5 +58,6 @@ python -u -m nav_analysis.evaluate_ppo \
     --out-dir-video ${OUT_DIR_VIDEO} \
     --nav-task ${NAV_TASK} \
     --tensorboard-dir "runs/${ENV_NAME}" \
-    --nav-env-verbose 0
-
+    --nav-env-verbose 0 \
+    # --max-memory-length ${i}
+# done

@@ -17,6 +17,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import tqdm
+from pydash import py_
 from torch.utils.tensorboard import SummaryWriter
 
 import habitat
@@ -30,6 +31,7 @@ from nav_analysis.config.default import cfg as cfg_baseline
 from nav_analysis.rl.ppo import PPO, Policy
 from nav_analysis.rl.ppo.utils import batch_obs
 from nav_analysis.train_ppo import LoopNavRLEnv, NavRLEnv, make_env_fn
+from nav_analysis.rl.rnn_memory_buffer import RNNMemoryBuffer
 
 CFG_DIR = osp.join(osp.dirname(nav_analysis.__file__), "configs")
 
@@ -52,15 +54,11 @@ def val_env_fn(config_env, config_baseline, rank):
 
     if config_env.SIMULATOR.AGENT_0.TURNAROUND:
         env = LoopNavRLEnv(
-            config_env=config_env,
-            config_baseline=config_baseline,
-            dataset=dataset,
+            config_env=config_env, config_baseline=config_baseline, dataset=dataset
         )
     else:
         env = NavRLEnv(
-            config_env=config_env,
-            config_baseline=config_baseline,
-            dataset=dataset,
+            config_env=config_env, config_baseline=config_baseline, dataset=dataset
         )
 
     env.seed(rank)
@@ -74,9 +72,7 @@ def images_to_video(images, output_dir, video_name):
     for im in tqdm.tqdm(images):
         writer.append_data(im)
     writer.close()
-    logger.info(
-        "Generated video: {}".format(os.path.join(output_dir, video_name))
-    )
+    logger.info("Generated video: {}".format(os.path.join(output_dir, video_name)))
 
 
 def poll_checkpoint_folder(checkpoint_folder, previous_ckpt_ind):
@@ -104,8 +100,7 @@ def construct_val_envs(args):
     scenes = PointNavDatasetV1.get_scenes_to_load(basic_config.DATASET)
 
     assert len(scenes) >= args.num_processes, (
-        "reduce the number of processes as there "
-        "aren't enough number of scenes"
+        "reduce the number of processes as there " "aren't enough number of scenes"
     )
     scene_splits = [[] for _ in range(args.num_processes)]
     next_split_id = 0
@@ -117,31 +112,21 @@ def construct_val_envs(args):
     sim_gpus = [int(x) for x in args.sim_gpu_ids.strip().split(",")]
 
     for i in range(args.num_processes):
-        config_env = get_config(
-            config_file=args.task_config, config_dir=CFG_DIR
-        )
+        config_env = get_config(config_file=args.task_config, config_dir=CFG_DIR)
         config_env.defrost()
 
         config_env.DATASET.SPLIT = "val"
         config_env.DATASET.POINTNAVV1.CONTENT_SCENES = scene_splits[i]
 
-        config_env.SIMULATOR.HABITAT_SIM_V0.GPU_DEVICE_ID = sim_gpus[
-            i % len(sim_gpus)
-        ]
-        config_env.TASK.POINTGOAL_SENSOR.SENSOR_TYPE = (
-            args.pointgoal_sensor_type
-        )
+        config_env.SIMULATOR.HABITAT_SIM_V0.GPU_DEVICE_ID = sim_gpus[i % len(sim_gpus)]
+        config_env.TASK.POINTGOAL_SENSOR.SENSOR_TYPE = args.pointgoal_sensor_type
         config_env.TASK.POINTGOAL_SENSOR.SENSOR_DIMENSIONS = (
             args.pointgoal_sensor_dimensions
         )
-        config_env.TASK.POINTGOAL_SENSOR.GOAL_FORMAT = (
-            args.pointgoal_sensor_format
-        )
+        config_env.TASK.POINTGOAL_SENSOR.GOAL_FORMAT = args.pointgoal_sensor_format
         config_env.DATASET.TYPE = "PointNav-v1"
 
-        agent_sensors = [
-            s for s in args.sensors.strip().split(",") if len(s) > 0
-        ]
+        agent_sensors = [s for s in args.sensors.strip().split(",") if len(s) > 0]
 
         if args.video == 1 and "RGB_SENSOR" not in agent_sensors:
             agent_sensors.append("RGB_SENSOR")
@@ -190,9 +175,7 @@ def construct_val_envs(args):
     envs = habitat.VectorEnv(
         make_env_fn=val_env_fn,
         env_fn_args=tuple(
-            tuple(
-                zip(env_configs, baseline_configs, range(args.num_processes))
-            )
+            tuple(zip(env_configs, baseline_configs, range(args.num_processes)))
         ),
     )
 
@@ -219,12 +202,13 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--tensorboard-dir", type=str, required=True)
     parser.add_argument("--nav-env-verbose", type=int, required=True)
+    parser.add_argument("--max-memory-length", type=int, default=None)
 
     args = parser.parse_args()
 
     random.seed(args.seed)
-    torch.random.manual_seed(args.seed)
-    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.enabled = True
+    torch.backends.cudnn.benchmark = True
 
     logger.add_filehandler(args.log_file)
 
@@ -297,6 +281,11 @@ def main():
 
             actor_critic = actor_critic.to(device)
             actor_critic.eval()
+            rnn_memory_buffer = RNNMemoryBuffer(
+                actor_critic,
+                num_processes=args.num_processes,
+                memory_length=args.max_memory_length,
+            )
 
             if trained_args.blind:
                 assert actor_critic.net.cnn is None
@@ -306,9 +295,7 @@ def main():
             for sensor in batch:
                 batch[sensor] = batch[sensor].to(device)
 
-            current_episode_reward = torch.zeros(
-                envs.num_envs, 1, device=device
-            )
+            current_episode_reward = torch.zeros(envs.num_envs, 1, device=device)
 
             test_recurrent_hidden_states = torch.zeros(
                 actor_critic.net.num_recurrent_layers,
@@ -321,7 +308,9 @@ def main():
                 args.num_processes, 1, device=device, dtype=torch.int64
             )
 
-            with tqdm.tqdm(total=args.count_test_episodes) as pbar:
+            rnn_memory_buffer.gt_hidden = test_recurrent_hidden_states.clone()
+
+            with tqdm.tqdm(total=args.count_test_episodes, ncols=0) as pbar:
                 total_episode_counts = 0
                 stats_episodes = {}
 
@@ -329,12 +318,23 @@ def main():
                     current_episodes = envs.current_episodes()
 
                     with torch.no_grad():
+                        test_recurrent_hidden_states = (
+                            rnn_memory_buffer.get_hidden_states()
+                        )
+
                         _, actions, _, _, test_recurrent_hidden_states = actor_critic.act(
                             batch,
                             test_recurrent_hidden_states,
                             prev_actions,
                             not_done_masks,
                             deterministic=False,
+                        )
+
+                        rnn_memory_buffer.add(
+                            batch,
+                            prev_actions,
+                            not_done_masks,
+                            test_recurrent_hidden_states,
                         )
 
                         prev_actions.copy_(actions)
@@ -376,9 +376,7 @@ def main():
                                 for k in infos[i][key_spl]:
                                     res[k] = infos[i][key_spl][k]
 
-                                res["success"] = (
-                                    infos[i][key_spl]["total_spl"] > 0
-                                )
+                                res["success"] = infos[i][key_spl]["total_spl"] > 0
 
                                 logger.info(
                                     "EP {}, S1 SPL: {:.3f}, "
@@ -392,26 +390,21 @@ def main():
                                 )
 
                                 logger.info(
-                                    "Num parallel envs: {}".format(
-                                        envs.num_envs
-                                    )
+                                    "Num parallel envs: {}".format(envs.num_envs)
                                 )
 
-                                stats_episodes[
-                                    current_episodes[i].episode_id
-                                ] = res
+                                stats_episodes[current_episodes[i].episode_id] = res
                             else:
-                                stats_episodes[
-                                    current_episodes[i].episode_id
-                                ] = {
+                                stats_episodes[current_episodes[i].episode_id] = {
                                     key_spl: infos[i][key_spl],
                                     "success": infos[i][key_spl] > 0,
                                 }
 
                                 logger.info(
-                                    "EP {}, SPL".format(
+                                    "EP {}, SPL {}, Success {}".format(
                                         current_episodes[i].episode_id,
                                         infos[i][key_spl],
+                                        infos[i][key_spl] > 0,
                                     )
                                 )
 
@@ -432,26 +425,20 @@ def main():
                                     )
 
                                 images_to_video(
-                                    rgb_frames[i],
-                                    args.out_dir_video,
-                                    video_name,
+                                    rgb_frames[i], args.out_dir_video, video_name
                                 )
                                 rgb_frames[i] = []
 
                         elif args.video == 1:
                             # episode continuing, record frames
                             size = observations[i]["rgb"].shape[0]
-                            frame = np.empty(
-                                (size, 2 * size, 3), dtype=np.uint8
-                            )
+                            frame = np.empty((size, 2 * size, 3), dtype=np.uint8)
                             frame[:, :size] = observations[i]["rgb"][:, :, :3]
 
                             if infos[i]["collisions"]["is_collision"]:
                                 frame[:, 1024:] = [0, 0, 0]
 
-                                mask = np.ones(
-                                    (frame.shape[0], frame.shape[1])
-                                )
+                                mask = np.ones((frame.shape[0], frame.shape[1]))
                                 mask[30:-30, 30 : 1024 - 30] = 0
                                 mask = mask == 1
                                 alpha = 0.5
@@ -470,16 +457,13 @@ def main():
                                 round(scale * top_down_map.shape[1]),
                             )
 
-                            map_agent_pos = infos[i]["top_down_map"][
-                                "map_agent_pos"
-                            ]
+                            map_agent_pos = infos[i]["top_down_map"]["map_agent_pos"]
                             map_agent_pos[0] = int(map_agent_pos[0] * scale_x)
                             map_agent_pos[1] = int(map_agent_pos[1] * scale_y)
                             top_down_map = maps.draw_agent(
                                 top_down_map,
                                 map_agent_pos,
-                                -infos[i]["top_down_map"]["agent_angle"]
-                                + np.pi / 2,
+                                -infos[i]["top_down_map"]["agent_angle"] + np.pi / 2,
                                 agent_radius_px=7 * 4,
                             )
                             if top_down_map.shape[0] > top_down_map.shape[1]:
@@ -496,17 +480,29 @@ def main():
                     current_episode_reward *= not_done_masks
 
                     if key_spl != "loop_spl":
-                        avg_spl = sum(
-                            map(lambda v: v["spl"], stats_episodes.values())
+                        avg_spl = (
+                            py_().values().map("spl").sum()(stats_episodes)
                         ) / max(len(stats_episodes), 1.0)
 
-                        pbar.set_postfix(spl=avg_spl)
+                        pbar.set_postfix(
+                            spl=avg_spl,
+                            success=(
+                                py_()
+                                .values()
+                                .map("success")
+                                .map(int)
+                                .mean()(stats_episodes)
+                                if len(stats_episodes) > 0
+                                else 0.0
+                            ),
+                        )
 
                     if len(envs_to_pause) > 0:
                         state_index = list(range(envs.num_envs))
                         for idx in reversed(envs_to_pause):
                             state_index.pop(idx)
                             envs.pause_at(idx)
+                            rnn_memory_buffer.pause_at(idx)
 
                         # indexing along the batch dimensions
                         test_recurrent_hidden_states = test_recurrent_hidden_states[
@@ -514,9 +510,7 @@ def main():
                         ]
                         prev_actions = prev_actions[state_index]
                         not_done_masks = not_done_masks[state_index]
-                        current_episode_reward = current_episode_reward[
-                            state_index
-                        ]
+                        current_episode_reward = current_episode_reward[state_index]
 
                         for k, v in batch.items():
                             batch[k] = v[state_index]
@@ -526,10 +520,7 @@ def main():
 
             logger.info("Checkpoint {} results:".format(current_ckpt))
 
-            total_success = 0.0
-            for k, v in stats_episodes.items():
-                if v["success"] is True:
-                    total_success += 1
+            total_success = py_().values().map("success").map(int).sum()(stats_episodes)
 
             logger.info(
                 "Average episode success: {:.6f}".format(
@@ -549,35 +540,65 @@ def main():
                 avg_stage_2_spl = total_stage_2_spl / len(stats_episodes)
 
                 logger.info(
-                    "Average episode stage-1 SPL: {:.6f}".format(
-                        avg_stage_1_spl
-                    )
+                    "Average episode stage-1 SPL: {:.6f}".format(avg_stage_1_spl)
                 )
                 logger.info(
-                    "Average episode stage-2 SPL: {:.6f}".format(
-                        avg_stage_2_spl
-                    )
+                    "Average episode stage-2 SPL: {:.6f}".format(avg_stage_2_spl)
                 )
 
-                tb_writer.add_scalar(
-                    "stage-1 SPL", avg_stage_1_spl, prev_ckpt_ind
-                )
-                tb_writer.add_scalar(
-                    "stage-2 SPL", avg_stage_2_spl, prev_ckpt_ind
+                tb_writer.add_scalars(
+                    "val",
+                    {
+                        "stage-1 SPL": avg_stage_1_spl,
+                        "stage-2 SPL": avg_stage_2_spl,
+                        "Success": total_success / len(stats_episodes),
+                    },
+                    prev_ckpt_ind,
                 )
             else:
-                total_spl = 0.0
-
-                for k, v in stats_episodes.items():
-                    total_spl += v["spl"]
-
-                avg_spl = total_spl / len(stats_episodes)
+                avg_spl = py_().values().map("spl").mean()(stats_episodes)
 
                 logger.info("Average episode SPL: {:.6f}".format(avg_spl))
 
-                tb_writer.add_scalar("SPL", avg_spl, prev_ckpt_ind)
+                tb_writer.add_scalars(
+                    "val",
+                    {"SPL": avg_spl, "Success": total_success / len(stats_episodes)},
+                    prev_ckpt_ind,
+                )
 
             envs.close()
+
+            if args.max_memory_length is not None:
+                import json
+                import os.path as osp
+                import pprint
+                import gzip
+
+                res = dict(mem_len=[], spl=[], success=[])
+                if osp.exists("spl_vs_mem_len.json.gz"):
+                    with gzip.open("spl_vs_mem_len.json.gz", "rt") as f:
+                        res = json.load(f)
+
+                for v in stats_episodes.values():
+                    res["mem_len"].append(args.max_memory_length)
+                    res["spl"].append(v["spl"])
+                    res["success"].append(int(v["success"]))
+
+                with gzip.open("spl_vs_mem_len.json.gz", "wt") as f:
+                    json.dump(res, f)
+
+                print("=" * 10)
+                print(
+                    json.dumps(
+                        dict(
+                            spl=avg_spl,
+                            success=total_success / len(stats_episodes),
+                            mem_len=args.max_memory_length,
+                        )
+                    )
+                )
+                print("=" * 10)
+                return
 
 
 if __name__ == "__main__":

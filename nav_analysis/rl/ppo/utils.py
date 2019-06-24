@@ -479,6 +479,7 @@ def ppo_args():
         default="resnet50",
         choices=[
             "resnet50",
+            "resnet50_norm",
             "se_resneXt50",
             "se_resneXt101",
             "se_resneXt25",
