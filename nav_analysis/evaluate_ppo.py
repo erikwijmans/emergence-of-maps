@@ -150,6 +150,9 @@ def construct_val_envs(args):
 
         for sensor in agent_sensors:
             assert sensor in ["RGB_SENSOR", "DEPTH_SENSOR"]
+        if args.blind:
+            agent_sensors = []
+
         config_env.SIMULATOR.AGENT_0.SENSORS = agent_sensors
 
         if args.blind and args.video == 0:
@@ -162,8 +165,10 @@ def construct_val_envs(args):
         config_env.SIMULATOR.AGENT_0.TURNAROUND = args.nav_task == "loopnav"
 
         if args.nav_task == "loopnav":
-            config_env.TASK.MEASUREMENTS = ["LOOPSPL"]
+            config_env.TASK.MEASUREMENTS = ["LOOPSPL", "LOOP_D_DELTA"]
             config_env.TASK.LOOPSPL.BREAKDOWN_METRIC = True
+            config_env.TASK.LOOPNAV_GIVE_RETURN_OBS = False
+            config_env.TASK.SENSORS += ["EPO_GPS_AND_COMPASS", "EPISODE_STAGE"]
         else:
             config_env.TASK.MEASUREMENTS = ["SPL"]
 
@@ -289,6 +294,10 @@ def main():
                 rnn_type=trained_args.rnn_type,
                 resnet_baseplanes=trained_args.resnet_baseplanes,
                 backbone=trained_args.backbone,
+                task=trained_args.nav_task,
+                norm_visual_inputs=getattr(
+                    trained_args, "norm_visual_inputs", False
+                ),
             )
             actor_critic.load_state_dict(
                 {
@@ -397,9 +406,15 @@ def main():
                                 for k in infos[i][key_spl]:
                                     res[k] = infos[i][key_spl][k]
 
-                                res["success"] = (
+                                res["success"] = int(
                                     infos[i][key_spl]["total_spl"] > 0
                                 )
+                                res["stage_1_d_delta"] = infos[i][
+                                    "loop_d_delta"
+                                ]["stage_1"]
+                                res["stage_2_d_delta"] = infos[i][
+                                    "loop_d_delta"
+                                ]["stage_2"]
 
                                 logger.info(
                                     "EP {}, S1 SPL: {:.3f}, "
@@ -426,7 +441,7 @@ def main():
                                     current_episodes[i].episode_id
                                 ] = {
                                     key_spl: infos[i][key_spl],
-                                    "success": infos[i][key_spl] > 0,
+                                    "success": (infos[i][key_spl] > 0),
                                 }
 
                                 logger.info(
@@ -519,20 +534,37 @@ def main():
 
                     if key_spl != "loop_spl":
                         avg_spl = (
-                            py_().values().map("spl").sum()(stats_episodes)
-                        ) / max(len(stats_episodes), 1.0)
-
+                            py_().values().map("spl").mean()(stats_episodes)
+                            if len(stats_episodes) > 0
+                            else 0.0
+                        )
                         pbar.set_postfix(
                             spl=avg_spl,
                             success=(
                                 py_()
                                 .values()
                                 .map("success")
-                                .map(int)
                                 .mean()(stats_episodes)
                                 if len(stats_episodes) > 0
                                 else 0.0
                             ),
+                        )
+                    else:
+
+                        def _avg(k):
+                            return "{:.3f}".format(
+                                py_().values().map(k).mean()(stats_episodes)
+                                if len(stats_episodes) > 0
+                                else 0.0
+                            )
+
+                        pbar.set_postfix(
+                            total_spl=_avg("total_spl"),
+                            success=_avg("success"),
+                            stage_1_spl=_avg("stage_1_spl"),
+                            stage_2_spl=_avg("stage_2_spl"),
+                            stage_1_d_delta=_avg("stage_1_d_delta"),
+                            stage_2_d_delta=_avg("stage_2_d_delta"),
                         )
 
                     if len(envs_to_pause) > 0:

@@ -23,17 +23,18 @@ export MAGNUM_LOG=quiet
 SIM_GPU_IDS="0"
 PTH_GPU_ID="0"
 SENSOR_TYPES="RGB_SENSOR"
-NUM_PROCESSES=4
-CHECKPOINT_MODEL_DIR="data/checkpoints/rgbd_with_norm"
+NUM_PROCESSES=8
+CHECKPOINT_MODEL_DIR="data/checkpoints/mp3d-gibson-2plus-se-resneXt50-long-rgb"
 ENV_NAME=$(basename ${CHECKPOINT_MODEL_DIR})
 # ENV_NAME="testing"
-MAX_EPISODE_TIMESTEPS=2000
+MAX_EPISODE_TIMESTEPS=500
 TASK_CONFIG="tasks/gibson.pointnav.yaml"
 NAV_TASK="pointnav"
 
 if [ ${NAV_TASK} == "loopnav" ]
 then
     echo "FIX ME"
+    export LOG_FILE="/private/home/erikwijmans/projects/navigation-analysis-habitat/data/eval/eval.${ENV_NAME}.pointnav.log"
 else
     export LOG_FILE="/private/home/erikwijmans/projects/navigation-analysis-habitat/data/eval/eval.${ENV_NAME}.pointnav.log"
     # export LOG_FILE="/private/home/akadian/navigation-analysis/navigation-analysis-habitat/evaluate.blind.loopnav.T_S.log"

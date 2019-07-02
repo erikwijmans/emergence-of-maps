@@ -1,0 +1,67 @@
+general:
+    local_rank: ???
+    sim_gpu_id: ???
+    seed: 100
+
+model:
+    rnn_type: LSTM
+    hidden_size: 512
+    num_recurrent_layers: 2
+
+    backbone: resnet50
+    resnet_baseplnes: 32
+    norm_visual_inputs: False
+
+    blind: False
+
+optimizer:
+    lr: 2.5e-4
+    weight_decay: 0.0
+    max_grad_norm: 0.5
+    eps: 1.0e-5
+
+ppo:
+    clip_param: 0.1
+
+    value_loss_coef: 0.5
+    entropy_coef: 0.01
+
+    use_gae: True
+    normalize_advantage: False
+
+    tau: 0.95
+    gamma: 0.99
+    linear_clip_decay: False
+    linear_lr_decay: False
+
+    num_processes: 4
+    num_steps: 128
+    ppo_epoch: 2
+    num_mini_batch: 2
+    num_updates: 150000
+
+
+logging:
+    log_file: ???
+    checkpoint_folder: ???
+    tensorboard_dir: ???
+
+    log_interval: 25
+    save_state_interval: 50
+    checkpoint_interval: 200
+    reward_window_size: 200
+
+task:
+    nav_task: pointnav
+    task_config: tasks/gibson-public.pointnav.yaml
+    pointgoal_sensor_type: DENSE
+    pointgoal_sensor_dimensions: 2
+    pointgoal_sensor_format: POLAR
+    max_episode_timesteps: 500
+
+    agent_sensors: 
+        - DEPTH_SENSOR
+
+    shuffle_interval: 50000
+
+    loopnav_give_return_inputs: True

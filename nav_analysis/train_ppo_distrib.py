@@ -100,13 +100,13 @@ def setup_distrib_env():
 
 def main():
     global WORLD_RANK
-    parser = ppo_args()
-    args = parser.parse_args()
+    args = ppo_args()
 
     setup_distrib_env()
 
-    args.local_rank = int(os.environ.get("LOCAL_RANK", 0))
-    device = torch.device("cuda", args.local_rank)
+    args.general.local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    args.general.sim_gpu_id = args.general.local_rank
+    device = torch.device("cuda", args.general.local_rank)
     torch.cuda.set_device(device)
 
     dist.init_process_group(dist.Backend.NCCL)
@@ -114,50 +114,50 @@ def main():
     world_size = dist.get_world_size()
     world_rank = dist.get_rank()
     WORLD_RANK = world_rank
-    random.seed(args.seed + world_rank)
-    torch.manual_seed(args.seed + world_rank)
-    torch.cuda.manual_seed_all(args.seed + world_rank)
-    np.random.seed(args.seed + world_rank)
+    random.seed(args.general.seed + world_rank)
+    torch.manual_seed(args.general.seed + world_rank)
+    torch.cuda.manual_seed_all(args.general.seed + world_rank)
+    np.random.seed(args.general.seed + world_rank)
 
-    args.sim_gpu_id = args.local_rank
-
-    checkpoint_folder = args.checkpoint_folder
-    if WORLD_RANK == 0 and not os.path.isdir(args.checkpoint_folder):
+    checkpoint_folder = args.logging.checkpoint_folder
+    if WORLD_RANK == 0 and not os.path.isdir(args.logging.checkpoint_folder):
         os.makedirs(args.checkpoint_folder)
 
-    tensorboard_dir = args.tensorboard_dir
+    tensorboard_dir = args.logging.tensorboard_dir
 
-    output_log_file = args.log_file
+    output_log_file = args.logging.log_file
     if WORLD_RANK == 0:
         logger.add_filehandler(output_log_file)
 
     with construct_envs(args) as envs:
 
-        num_recurrent_layers = args.num_recurrent_layers
+        num_recurrent_layers = args.model.num_recurrent_layers
         actor_critic = Policy(
             observation_space=envs.observation_spaces[0],
             action_space=envs.action_spaces[0],
-            hidden_size=args.hidden_size,
+            hidden_size=args.model.hidden_size,
             num_recurrent_layers=num_recurrent_layers,
-            blind=args.blind,
-            use_aux_losses=args.use_aux_losses,
-            rnn_type=args.rnn_type,
-            resnet_baseplanes=args.resnet_baseplanes,
-            backbone=args.backbone,
+            blind=args.model.blind,
+            use_aux_losses=False,
+            rnn_type=args.model.rnn_type,
+            resnet_baseplanes=args.model.resnet_baseplanes,
+            backbone=args.model.backbone,
+            task=args.task.nav_task,
+            norm_visual_inputs=args.model.norm_visual_inputs,
         )
         actor_critic.to(device)
 
         agent = PPO(
             actor_critic,
-            args.clip_param,
-            args.ppo_epoch,
-            args.num_mini_batch,
-            args.value_loss_coef,
-            args.entropy_coef,
-            lr=args.lr,
-            eps=args.eps,
-            max_grad_norm=args.max_grad_norm,
-            weight_decay=args.weight_decay,
+            args.ppo.clip_param,
+            args.ppo.ppo_epoch,
+            args.ppo.num_mini_batch,
+            args.ppo.value_loss_coef,
+            args.ppo.entropy_coef,
+            lr=args.optimizer.lr,
+            eps=args.optimizer.eps,
+            max_grad_norm=args.optimizer.max_grad_norm,
+            weight_decay=args.optimizer.weight_decay,
         )
 
         env_time = 0
@@ -201,9 +201,7 @@ def main():
 
         if WORLD_RANK == 0:
             logger.info("-" * 50)
-            logger.info("args:")
-            for p in sorted(list(vars(args))):
-                logger.info("{}: {}".format(p, getattr(args, p)))
+            logger.info("args:\n" + args.pretty())
             logger.info("-" * 50)
 
         observations = envs.reset()
@@ -212,11 +210,11 @@ def main():
         logger.info(envs.observation_spaces[0])
 
         rollouts = RolloutStorage(
-            args.num_steps,
+            args.ppo.num_steps,
             envs.num_envs,
             envs.observation_spaces[0],
             envs.action_spaces[0],
-            args.hidden_size,
+            args.model.hidden_size,
             num_recurrent_layers=actor_critic.net.num_recurrent_layers,
         )
         for sensor in rollouts.observations:
@@ -225,9 +223,11 @@ def main():
 
         episode_spls = torch.zeros(envs.num_envs, 1).to(device)
 
-        if args.nav_task == "loopnav":
+        if args.task.nav_task == "loopnav":
             episode_stage_1_spls = torch.zeros(envs.num_envs, 1).to(device)
             episode_stage_2_spls = torch.zeros(envs.num_envs, 1).to(device)
+            episode_stage_1_d_deltas = torch.zeros(envs.num_envs, 1).to(device)
+            episode_stage_2_d_deltas = torch.zeros(envs.num_envs, 1).to(device)
 
         episode_successes = torch.zeros(envs.num_envs, 1).to(device)
         episode_rewards = torch.zeros(envs.num_envs, 1).to(device)
@@ -235,17 +235,28 @@ def main():
 
         current_episode_reward = torch.zeros(envs.num_envs, 1).to(device)
 
-        window_episode_reward = deque(maxlen=args.reward_window_size)
-        window_episode_counts = deque(maxlen=args.reward_window_size)
-        window_episode_spl = deque(maxlen=args.reward_window_size)
-        window_episode_successes = deque(maxlen=args.reward_window_size)
+        window_episode_reward = deque(maxlen=args.logging.reward_window_size)
+        window_episode_counts = deque(maxlen=args.logging.reward_window_size)
+        window_episode_spl = deque(maxlen=args.logging.reward_window_size)
+        window_episode_successes = deque(
+            maxlen=args.logging.reward_window_size
+        )
 
-        if args.nav_task == "loopnav":
-            window_episode_stage_1_spl = deque(maxlen=args.reward_window_size)
-            window_episode_stage_2_spl = deque(maxlen=args.reward_window_size)
+        if args.task.nav_task == "loopnav":
+            window_episode_stage_1_spl = deque(
+                maxlen=args.logging.reward_window_size
+            )
+            window_episode_stage_2_spl = deque(
+                maxlen=args.logging.reward_window_size
+            )
+            window_episode_stage_1_d_delta = deque(
+                maxlen=args.logging.reward_window_size
+            )
+            window_episode_stage_2_d_delta = deque(
+                maxlen=args.logging.reward_window_size
+            )
 
         t_start = time()
-        key_spl = "spl"
 
         tb_enabled = WORLD_RANK == 0
         if tb_enabled:
@@ -258,19 +269,22 @@ def main():
             if tb_enabled
             else contextlib.suppress()
         ) as writer:
-            for update in range(update_start_from, args.num_updates):
-                if args.use_linear_lr_decay:
+            for update in range(update_start_from, args.ppo.num_updates):
+                if args.ppo.linear_lr_decay:
                     update_linear_schedule(
-                        agent.optimizer, update, args.num_updates, args.lr
+                        agent.optimizer,
+                        update,
+                        args.ppo.num_updates,
+                        args.optimizer.lr,
                     )
 
-                if args.use_linear_clip_decay:
-                    agent.clip_param = args.clip_param * (
-                        1 - update / args.num_updates
+                if args.ppo.linear_clip_decay:
+                    agent.clip_param = args.ppo.clip_param * (
+                        1 - update / args.ppo.num_updates
                     )
 
                 actor_critic.eval()
-                for step in range(args.num_steps):
+                for step in range(args.ppo.num_steps):
                     count_steps += envs.num_envs * world_size
                     t_sample_action = time()
                     # sample actions
@@ -321,7 +335,7 @@ def main():
                     episode_counts += 1.0 - masks
                     current_episode_reward *= masks
 
-                    if args.nav_task == "pointnav":
+                    if args.task.nav_task == "pointnav":
                         key_spl = "spl"
                         episode_spls += torch.tensor(
                             [
@@ -362,23 +376,45 @@ def main():
 
                         episode_stage_1_spls += torch.tensor(
                             [
-                                [
-                                    [info[key_spl]["stage_1_spl"]]
-                                    if done
-                                    else [0.0]
-                                    for info, done in zip(infos, dones)
-                                ]
-                            ]
+                                [info[key_spl]["stage_1_spl"]]
+                                if done
+                                else [0.0]
+                                for info, done in zip(infos, dones)
+                            ],
+                            dtype=torch.float,
+                            device=device,
                         )
                         episode_stage_2_spls += torch.tensor(
                             [
-                                [
-                                    [info[key_spl]["stage_2_spl"]]
-                                    if done
-                                    else [0.0]
-                                ]
+                                [info[key_spl]["stage_2_spl"]]
+                                if done
+                                else [0.0]
                                 for info, done in zip(infos, dones)
-                            ]
+                            ],
+                            dtype=torch.float,
+                            device=device,
+                        )
+
+                        episode_stage_1_d_deltas += torch.tensor(
+                            [
+                                [info["loop_d_delta"]["stage_1"]]
+                                if done
+                                else [0.0]
+                                for info, done in zip(infos, dones)
+                            ],
+                            dtype=torch.float,
+                            device=device,
+                        )
+
+                        episode_stage_2_d_deltas += torch.tensor(
+                            [
+                                [info["loop_d_delta"]["stage_2"]]
+                                if done
+                                else [0.0]
+                                for info, done in zip(infos, dones)
+                            ],
+                            dtype=torch.float,
+                            device=device,
                         )
 
                     rollouts.insert(
@@ -401,7 +437,38 @@ def main():
                 )
                 dist.all_reduce(t_sync, op=dist.ReduceOp.MAX)
                 sync_time += t_sync.item()
-                if args.nav_task == "pointnav":
+
+                t_update_model = time()
+                with torch.no_grad():
+                    last_observation = {
+                        k: v[-1] for k, v in rollouts.observations.items()
+                    }
+                    next_value = actor_critic.get_value(
+                        last_observation,
+                        rollouts.recurrent_hidden_states[-1],
+                        rollouts.prev_actions[-1],
+                        rollouts.masks[-1],
+                    ).detach()
+
+                rollouts.compute_returns(
+                    next_value, args.ppo.use_gae, args.ppo.gamma, args.ppo.tau
+                )
+
+                actor_critic.train()
+                value_loss, action_loss, dist_entropy = agent.update(rollouts)
+
+                losses = torch.tensor(
+                    [value_loss, action_loss, dist_entropy],
+                    device=device,
+                    dtype=torch.float32,
+                )
+                dist.all_reduce(losses)
+                losses /= world_size
+
+                rollouts.after_update()
+                pth_time += time() - t_update_model
+
+                if args.task.nav_task == "pointnav":
                     stats = torch.cat(
                         [
                             episode_rewards,
@@ -420,12 +487,14 @@ def main():
                             episode_spls,
                             episode_successes,
                             episode_counts,
+                            episode_stage_1_d_deltas,
+                            episode_stage_2_d_deltas,
                         ],
                         1,
                     )
                 dist.all_reduce(stats)
 
-                if args.nav_task == "pointnav":
+                if args.task.nav_task == "pointnav":
                     window_episode_reward.append(stats[:, 0])
                     window_episode_spl.append(stats[:, 1])
                     window_episode_successes.append(stats[:, 2])
@@ -437,54 +506,11 @@ def main():
                     window_episode_spl.append(stats[:, 3])
                     window_episode_successes.append(stats[:, 4])
                     window_episode_counts.append(stats[:, 5])
-
-                t_update_model = time()
-                with torch.no_grad():
-                    last_observation = {
-                        k: v[-1] for k, v in rollouts.observations.items()
-                    }
-                    next_value = actor_critic.get_value(
-                        last_observation,
-                        rollouts.recurrent_hidden_states[-1],
-                        rollouts.prev_actions[-1],
-                        rollouts.masks[-1],
-                    ).detach()
-
-                rollouts.compute_returns(
-                    next_value, args.use_gae, args.gamma, args.tau
-                )
-
-                actor_critic.train()
-                value_loss, action_loss, dist_entropy = agent.update(rollouts)
-
-                losses = torch.tensor(
-                    [value_loss, action_loss, dist_entropy],
-                    device=device,
-                    dtype=torch.float32,
-                )
-                dist.all_reduce(losses)
-                losses /= world_size
-
-                rollouts.after_update()
-                pth_time += time() - t_update_model
-
-                stats = torch.cat(
-                    [
-                        episode_rewards,
-                        episode_spls,
-                        episode_successes,
-                        episode_counts,
-                    ],
-                    1,
-                )
-                dist.all_reduce(stats)
-                window_episode_reward.append(stats[:, 0])
-                window_episode_spl.append(stats[:, 1])
-                window_episode_successes.append(stats[:, 2])
-                window_episode_counts.append(stats[:, 3])
+                    window_episode_stage_1_d_delta.append(stats[:, 6])
+                    window_episode_stage_2_d_delta.append(stats[:, 7])
 
                 if tb_enabled:
-                    if args.nav_task == "pointnav":
+                    if args.task.nav_task == "pointnav":
                         stats = zip(
                             ["count", "reward", "spl", "success"],
                             [
@@ -503,6 +529,8 @@ def main():
                                 "stage_2_spl",
                                 "loopnav_spl",
                                 "success",
+                                "d_delta_s1",
+                                "d_delta_s2",
                             ],
                             [
                                 window_episode_counts,
@@ -511,6 +539,8 @@ def main():
                                 window_episode_stage_2_spl,
                                 window_episode_spl,
                                 window_episode_successes,
+                                window_episode_stage_1_d_delta,
+                                window_episode_stage_2_d_delta,
                             ],
                         )
                     deltas = {
@@ -530,15 +560,6 @@ def main():
                     )
 
                     writer.add_scalars(
-                        "metrics",
-                        {
-                            k: deltas[k] / deltas["count"]
-                            for k in [key_spl, "success"]
-                        },
-                        count_steps,
-                    )
-
-                    writer.add_scalars(
                         "losses",
                         {
                             k: l.item() * s
@@ -551,7 +572,7 @@ def main():
                         count_steps,
                     )
 
-                    if args.nav_task == "pointnav":
+                    if args.task.nav_task == "pointnav":
                         writer.add_scalars(
                             "metrics",
                             {
@@ -611,11 +632,14 @@ def main():
                     return
 
                 if world_rank == 0:
-                    if update > 0 and update % args.save_state_interval == 0:
+                    if (
+                        update > 0
+                        and update % args.logging.save_state_interval == 0
+                    ):
                         _save_state()
 
                     # log stats
-                    if update > 0 and update % args.log_interval == 0:
+                    if update > 0 and update % args.logging.log_interval == 0:
                         logger.info(
                             "update: {}\tfps: {:.3f}".format(
                                 update,
@@ -652,7 +676,7 @@ def main():
                             - window_episode_counts[0]
                         ).sum()
 
-                        if args.nav_task == "loopnav":
+                        if args.task.nav_task == "loopnav":
                             window_stage_1_spl = (
                                 window_episode_stage_1_spl[-1]
                                 - window_episode_stage_1_spl[0]
@@ -662,9 +686,18 @@ def main():
                                 - window_episode_stage_2_spl[0]
                             ).sum()
 
+                            window_stage_1_d_delta = (
+                                window_episode_stage_1_d_delta[-1]
+                                - window_episode_stage_1_d_delta[0]
+                            ).sum()
+                            window_stage_2_d_delta = (
+                                window_episode_stage_2_d_delta[-1]
+                                - window_episode_stage_2_d_delta[0]
+                            ).sum()
+
                         if window_counts > 0:
 
-                            if args.nav_task == "pointnav":
+                            if args.task.nav_task == "pointnav":
                                 logger.info(
                                     "Average window size {} reward: {:.3f}\t"
                                     "{}: {:.3f}\t success: {:.3f}".format(
@@ -684,6 +717,8 @@ def main():
                                     "Average window size {} reward: {:.3f}\t"
                                     "stage-1 spl: {:.3f}\t"
                                     "stage-2 spl: {:.3f}\t"
+                                    "stage-1 d_delta: {:.3f}\t"
+                                    "stage-2 d_delta: {:.3f}\t"
                                     "loop-spl: {:.3f}\t"
                                     "success: {:.3f}".format(
                                         len(window_episode_reward),
@@ -696,6 +731,14 @@ def main():
                                         (
                                             window_stage_2_spl / window_counts
                                         ).item(),
+                                        (
+                                            window_stage_1_d_delta
+                                            / window_counts
+                                        ).item(),
+                                        (
+                                            window_stage_2_d_delta
+                                            / window_counts
+                                        ).item(),
                                         (window_spl / window_counts).item(),
                                         (
                                             window_successes / window_counts
@@ -706,7 +749,7 @@ def main():
                             logger.info("No episodes finish in current window")
 
                     # checkpoint model
-                    if update % args.checkpoint_interval == 0:
+                    if update % args.logging.checkpoint_interval == 0:
                         checkpoint = {
                             "state_dict": {
                                 k: v

@@ -11,9 +11,10 @@ import torch.nn.functional as F
 import torchvision
 
 import nav_analysis.rl.resnet
+from nav_analysis.rl.running_mean_and_var import RunningMeanAndVar
 from nav_analysis.rl.ppo.utils import CategoricalNet, Flatten
 
-#  from nav_analysis.rl.layer_norm_lstm import LayerNormLSTM
+from nav_analysis.rl.layer_norm_lstm import LayerNormLSTM
 
 
 class Policy(nn.Module):
@@ -28,6 +29,8 @@ class Policy(nn.Module):
         rnn_type="GRU",
         resnet_baseplanes=32,
         backbone="resnet50",
+        task="pointnav",
+        norm_visual_inputs=False,
     ):
         super().__init__()
         self.dim_actions = action_space.n
@@ -40,10 +43,12 @@ class Policy(nn.Module):
             rnn_type=rnn_type,
             backbone=backbone,
             resnet_baseplanes=resnet_baseplanes,
+            task=task,
+            norm_visual_inputs=norm_visual_inputs,
         )
 
         self.action_distribution = CategoricalNet(
-            self.net.output_size, self.dim_actions
+            self.net.output_size, self.dim_actions, task=task
         )
 
         assert not blind or not use_aux_losses
@@ -72,7 +77,7 @@ class Policy(nn.Module):
         value, actor_features, rnn_hidden_states, _ = self.net(
             observations, rnn_hidden_states, prev_actions, masks
         )
-        distribution = self.action_distribution(actor_features)
+        distribution = self.action_distribution(actor_features, observations)
 
         if deterministic:
             action = distribution.mode()
@@ -106,7 +111,7 @@ class Policy(nn.Module):
         value, actor_features, rnn_hidden_states, cnn_feats = self.net(
             observations, rnn_hidden_states, prev_actions, masks
         )
-        distribution = self.action_distribution(actor_features)
+        distribution = self.action_distribution(actor_features, observations)
 
         action_log_probs = distribution.log_probs(action)
         distribution_entropy = distribution.entropy().mean()
@@ -197,18 +202,20 @@ class Net(nn.Module):
         rnn_type,
         backbone,
         resnet_baseplanes,
+        task,
+        norm_visual_inputs,
     ):
         super().__init__()
 
         if "rgb" in observation_space.spaces:
             self._n_input_rgb = observation_space.spaces["rgb"].shape[2]
             self._n_input_rgb = 3
-            self.register_buffer(
-                "grayscale_kernel",
-                torch.tensor(
-                    [0.2126, 0.7152, 0.0722], dtype=torch.float32
-                ).view(1, 3, 1, 1),
-            )
+            #  self.register_buffer(
+            #  "grayscale_kernel",
+            #  torch.tensor([0.2126, 0.7152, 0.0722], dtype=torch.float32).view(
+            #  1, 3, 1, 1
+            #  ),
+            #  )
             spatial_size = observation_space.spaces["rgb"].shape[0] // 2
         else:
             self._n_input_rgb = 0
@@ -219,14 +226,11 @@ class Net(nn.Module):
         else:
             self._n_input_depth = 0
 
-        self._norm_inputs = False
-        if backbone.split("_")[-1] == "norm":
-            self.register_buffer("_mean", torch.zeros(1, 4, 1, 1))
-            self.register_buffer("_var", torch.full((1, 4, 1, 1), 0.0))
-            self.register_buffer("_count", torch.full((), 0.0))
-            self._norm_inputs = True
-
-            backbone = "_".join(backbone.split("_")[:-1])
+        self._norm_inputs = norm_visual_inputs
+        if self._norm_inputs:
+            self.running_mean_and_var = RunningMeanAndVar(
+                self._n_input_depth + self._n_input_rgb
+            )
 
         self.prev_action_embedding = nn.Embedding(5, 32)
         self._n_prev_action = 32
@@ -237,6 +241,20 @@ class Net(nn.Module):
             self._n_input_goal -= 1
         self.tgt_embed = nn.Linear(self._n_input_goal, 32)
         self._n_input_goal = 32
+
+        if "gps_and_compass" in observation_space.spaces:
+            self.gps_compass_embed = nn.Linear(
+                observation_space.spaces["gps_and_compass"].shape[0], 32
+            )
+            self._n_input_goal += 32
+        else:
+            self.gps_compass_embed = None
+
+        if "episode_stage" in observation_space.spaces:
+            self.stage_embed = nn.Embedding(2, 32)
+            self._n_input_goal += 32
+        else:
+            self.stage_embed = None
 
         self._hidden_size = hidden_size
 
@@ -272,7 +290,23 @@ class Net(nn.Module):
             self.rnn = getattr(nn, rnn_type)(
                 rnn_input_size, hidden_size, num_layers=num_recurrent_layers
             )
-        self.critic_linear = nn.Linear(hidden_size, 1)
+
+        self._task = task
+        if task == "loopnav":
+            self.critic = nn.Sequential(
+                nn.Linear(hidden_size, hidden_size // 2),
+                nn.ReLU(True),
+                nn.Linear(hidden_size // 2, 1),
+            )
+            self.backward_critic = nn.Sequential(
+                nn.Linear(hidden_size, hidden_size // 2),
+                nn.ReLU(True),
+                nn.Linear(hidden_size // 2, hidden_size // 2),
+                nn.ReLU(True),
+                nn.Linear(hidden_size // 2, 1),
+            )
+        else:
+            self.critic_linear = nn.Linear(hidden_size, 1)
 
         self.layer_init()
         self.train()
@@ -303,8 +337,10 @@ class Net(nn.Module):
             elif "bias" in name:
                 nn.init.constant_(param, 0)
 
-        nn.init.orthogonal_(self.critic_linear.weight, gain=1)
-        nn.init.constant_(self.critic_linear.bias, val=0)
+        for layer in self.modules():
+            if isinstance(layer, nn.Linear):
+                nn.init.orthogonal_(layer.weight, gain=0.01)
+                nn.init.constant_(layer.bias, 0)
 
     def _pack_hidden(self, hidden_states):
         if "LSTM" in self._rnn_type:
@@ -426,60 +462,31 @@ class Net(nn.Module):
             cnn_input = torch.cat(cnn_input, dim=1)
             cnn_input = F.avg_pool2d(cnn_input, 2)
             if self._norm_inputs:
-                if self.training:
-                    import torch.distributed as distrib
-
-                    new_mean = F.adaptive_avg_pool2d(cnn_input, 1).mean(
-                        0, keepdim=True
-                    )
-                    new_count = torch.full_like(self._count, 1)
-
-                    if distrib.is_initialized():
-                        distrib.all_reduce(new_mean)
-                        distrib.all_reduce(new_count)
-
-                    new_mean /= new_count
-
-                    new_var = F.adaptive_avg_pool2d(
-                        (cnn_input - new_mean).pow(2), 1
-                    ).mean(0, keepdim=True)
-
-                    if distrib.is_initialized():
-                        distrib.all_reduce(new_var)
-
-                    # No - 1 on all the variance as the number of pixels
-                    # seen over training is simply absurd, so it doesn't matter
-                    new_var /= new_count
-
-                    m_a = self._var * (self._count)
-                    m_b = new_var * (new_count)
-                    M2 = (
-                        m_a
-                        + m_b
-                        + (new_mean - self._mean).pow(2)
-                        * self._count
-                        * new_count
-                        / (self._count + new_count)
-                    )
-
-                    self._var = M2 / (self._count + new_count)
-                    self._mean = (
-                        self._count * self._mean + new_count * new_mean
-                    ) / (self._count + new_count)
-
-                    self._count += new_count
-
-                stdev = torch.sqrt(
-                    torch.max(self._var, torch.full_like(self._var, 1e-2))
-                )
-                cnn_input = (cnn_input - self._mean) / stdev
+                cnn_input = self.running_mean_and_var(cnn_input)
 
             cnn_feats = self.cnn(cnn_input)
             x += [cnn_feats]
 
         x += [goal_observations, prev_actions]
+        if self.gps_compass_embed is not None:
+            x += [self.gps_compass_embed(observations["gps_and_compass"])]
+
+        if self.stage_embed is not None:
+            x += [
+                self.stage_embed(
+                    observations["episode_stage"].long().squeeze(-1)
+                )
+            ]
 
         x = torch.cat(x, dim=1)  # concatenate goal vector
         x, rnn_hidden_states = self.forward_rnn(x, rnn_hidden_states, masks)
+        if self._task == "loopnav":
+            value = torch.where(
+                observations["episode_stage"].view(-1, 1) == 1,
+                self.backward_critic(x),
+                self.critic(x),
+            )
+        else:
+            value = self.critic_linear(x)
 
-        return self.critic_linear(x), x, rnn_hidden_states, cnn_feats
+        return value, x, rnn_hidden_states, cnn_feats

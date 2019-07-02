@@ -19,5 +19,9 @@ for k in [
     state[k] = state[k][reordering]
 
 
+reordering = torch.tensor([0, 4, 1, 2, 3], dtype=torch.long)
+for k in ["actor_critic.net.prev_action_embedding.weight"]:
+    state[k] = state[k][reordering]
+
 ckpt["state_dict"] = state
 torch.save(ckpt, args.output if args.output is not None else args.path)

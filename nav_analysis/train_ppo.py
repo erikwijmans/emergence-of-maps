@@ -152,6 +152,7 @@ class LoopNavRLEnv(NavRLEnv):
         self._current_target = None
         self._episode_stage = None
         self._stages_successful = []
+        self._give_return_obs = config_env.TASK.LOOPNAV_GIVE_RETURN_OBS
         super().__init__(config_env, config_baseline, dataset)
 
     def reset(self):
@@ -224,7 +225,6 @@ class LoopNavRLEnv(NavRLEnv):
                         )
 
         observations, reward, done, info = super().step(action)
-
         # update episode stage
         if action == SimulatorActions.STOP.value and self._episode_stage == 0:
             self._episode_stage = 1
@@ -232,6 +232,10 @@ class LoopNavRLEnv(NavRLEnv):
         if curr_episode_over:
             done = True
             self._env.episode_over = True
+
+        if self._episode_stage == 1 and not self._give_return_obs:
+            for k, v in observations.items():
+                observations[k] = np.zeros_like(v)
 
         return observations, reward, done, info
 
@@ -246,7 +250,11 @@ class LoopNavRLEnv(NavRLEnv):
             logger.info("Infinite geodesic distance observed in get_reward")
             return 0.0
 
-        reward += self._previous_target_distance - current_target_distance
+        reward += 2.5 * (
+            (self._previous_target_distance - current_target_distance)
+            * (2.0 if self._episode_stage == 1 else 1.0)
+            / self._env.current_episode.info["geodesic_distance"]
+        )
         self._previous_target_distance = current_target_distance
 
         if self._episode_success():
@@ -324,19 +332,24 @@ def make_env_fn(config_env, config_baseline, shuffle_interval, rank):
     return env
 
 
-def construct_envs(args):
+def construct_envs(args, split="train"):
     env_configs = []
     baseline_configs = []
 
-    basic_config = cfg_env(config_file=args.task_config, config_dir=CFG_DIR)
+    basic_config = cfg_env(
+        config_file=args.task.task_config, config_dir=CFG_DIR
+    )
 
+    basic_config.defrost()
+    basic_config.DATASET.SPLIT = split
+    basic_config.freeze()
     scenes = PointNavDatasetV1.get_scenes_to_load(basic_config.DATASET)
 
-    scene_splits = [[] for _ in range(args.num_processes)]
+    scene_splits = [[] for _ in range(args.ppo.num_processes)]
     if len(scenes) > 0:
         random.shuffle(scenes)
 
-        assert len(scenes) >= args.num_processes, (
+        assert len(scenes) >= args.ppo.num_processes, (
             "reduce the number of processes as there "
             "aren't enough number of scenes"
         )
@@ -346,47 +359,63 @@ def construct_envs(args):
             scene_splits[next_split_id].append(s)
             next_split_id = (next_split_id + 1) % len(scene_splits)
 
-    for i in range(args.num_processes):
-        config_env = cfg_env(config_file=args.task_config, config_dir=CFG_DIR)
+    for i in range(args.ppo.num_processes):
+        config_env = cfg_env(
+            config_file=args.task.task_config, config_dir=CFG_DIR
+        )
         config_env.defrost()
+
+        config_env.DATASET.SPLIT = split
+        if split == "val":
+            config_env.DATASET.TYPE = "PointNav-v1"
+        else:
+            config_env.DATASET.TYPE = "PointNavOTF-v1"
 
         if len(scenes) > 0:
             config_env.DATASET.POINTNAVV1.CONTENT_SCENES = scene_splits[i]
 
-        config_env.SIMULATOR.HABITAT_SIM_V0.GPU_DEVICE_ID = args.sim_gpu_id
+        config_env.SIMULATOR.HABITAT_SIM_V0.GPU_DEVICE_ID = (
+            args.general.sim_gpu_id
+        )
         config_env.TASK.POINTGOAL_SENSOR.SENSOR_TYPE = (
-            args.pointgoal_sensor_type
+            args.task.pointgoal_sensor_type
         )
         config_env.TASK.POINTGOAL_SENSOR.SENSOR_DIMENSIONS = (
-            args.pointgoal_sensor_dimensions
+            args.task.pointgoal_sensor_dimensions
         )
         config_env.TASK.POINTGOAL_SENSOR.GOAL_FORMAT = (
-            args.pointgoal_sensor_format
+            args.task.pointgoal_sensor_format
         )
 
-        agent_sensors = [
-            s for s in args.sensors.strip().split(",") if len(s) > 0
-        ]
+        agent_sensors = args.task.agent_sensors
         for sensor in agent_sensors:
             assert sensor in ["RGB_SENSOR", "DEPTH_SENSOR"]
+
+        if args.model.blind:
+            agent_sensors = []
+
         config_env.SIMULATOR.AGENT_0.SENSORS = agent_sensors
 
-        if args.blind:
-            config_env.SIMULATOR.DEPTH_SENSOR.WIDTH = 2
-            config_env.SIMULATOR.DEPTH_SENSOR.HEIGHT = 2
+        config_env.SIMULATOR.AGENT_0.TURNAROUND = (
+            args.task.nav_task == "loopnav"
+        )
 
-            config_env.SIMULATOR.RGB_SENSOR.HEIGHT = 2
-            config_env.SIMULATOR.RGB_SENSOR.WIDTH = 2
-
-        config_env.SIMULATOR.AGENT_0.TURNAROUND = args.nav_task == "loopnav"
-
-        if args.nav_task == "loopnav":
-            config_env.TASK.MEASUREMENTS = ["LOOPSPL"]
+        if args.task.nav_task == "loopnav":
+            config_env.TASK.MEASUREMENTS = ["LOOPSPL", "LOOP_D_DELTA"]
             config_env.TASK.LOOPSPL.BREAKDOWN_METRIC = True
+            config_env.TASK.LOOPNAV_GIVE_RETURN_OBS = (
+                args.task.loopnav_give_return_inputs
+            )
         else:
             config_env.TASK.MEASUREMENTS = ["SPL"]
 
-        config_env.ENVIRONMENT.MAX_EPISODE_STEPS = args.max_episode_timesteps
+        #  config_env.TASK.MEASUREMENTS.append("COLLISIONS")
+        #  config_env.TASK.MEASUREMENTS.append("EGO_POSE")
+        #  config_env.TASK.MEASUREMENTS.append("GOAL_POSE")
+
+        config_env.ENVIRONMENT.MAX_EPISODE_STEPS = (
+            args.task.max_episode_timesteps
+        )
 
         config_env.freeze()
         env_configs.append(config_env)
@@ -403,8 +432,11 @@ def construct_envs(args):
                 zip(
                     env_configs,
                     baseline_configs,
-                    [args.shuffle_interval for _ in range(args.num_processes)],
-                    range(args.num_processes),
+                    [
+                        args.task.shuffle_interval
+                        for _ in range(args.ppo.num_processes)
+                    ],
+                    range(args.ppo.num_processes),
                 )
             )
         ),
@@ -436,7 +468,7 @@ def main():
         action_space=envs.action_spaces[0],
         hidden_size=args.hidden_size,
         num_recurrent_layers=1,
-        blind=0,
+        blind=args.blind,
         use_aux_losses=0,
         rnn_type="LSTM",
     )
