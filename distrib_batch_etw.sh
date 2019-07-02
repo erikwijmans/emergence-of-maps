@@ -28,7 +28,7 @@ ENV_NAME="gibson-all-se-neXt25-depth"
 ENV_NAME="mp3d-gibson-2plus-se-resneXt50-long-depth"
 # ENV_NAME="gibson-public-50-single-GPU-depth"
 # ENV_NAME="gibson-2plus-se-neXt101-lstm1024-long-depth"
-ENV_NAME="gibson-public-loopnav-noreturn-long-blind"
+ENV_NAME="mp3d-gibson-all-loopnav-noreturn-long-blind"
 # ENV_NAME="testing"
 CHECKPOINT="data/checkpoints/${ENV_NAME}"
 

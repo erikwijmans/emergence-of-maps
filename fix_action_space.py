@@ -1,6 +1,6 @@
-import torch
 import argparse
 
+import torch
 
 parser = argparse.ArgumentParser()
 parser.add_argument("path", type=str)

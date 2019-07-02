@@ -5,12 +5,12 @@
 # LICENSE file in the root directory of this source tree.
 
 import argparse
+import getpass
 import logging
 import os
 import os.path as osp
 import random
 import time
-import getpass
 
 import imageio
 import numpy as np
@@ -30,8 +30,8 @@ from habitat.utils.visualizations import maps
 from nav_analysis.config.default import cfg as cfg_baseline
 from nav_analysis.rl.ppo import PPO, Policy
 from nav_analysis.rl.ppo.utils import batch_obs
-from nav_analysis.train_ppo import LoopNavRLEnv, NavRLEnv, make_env_fn
 from nav_analysis.rl.rnn_memory_buffer import RNNMemoryBuffer
+from nav_analysis.train_ppo import LoopNavRLEnv, NavRLEnv, make_env_fn
 
 CFG_DIR = osp.join(osp.dirname(nav_analysis.__file__), "configs")
 

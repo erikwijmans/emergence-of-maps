@@ -5,13 +5,13 @@
 # LICENSE file in the root directory of this source tree.
 
 import argparse
-from collections import defaultdict
 import os.path as osp
+from collections import defaultdict
 
 import numpy as np
+import omegaconf
 import torch
 import torch.nn as nn
-import omegaconf
 
 import nav_analysis
 

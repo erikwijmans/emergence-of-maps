@@ -1,13 +1,14 @@
-import torch
-import numpy as np
-import h5py as h5
 import argparse
+
+import h5py as h5
+import numpy as np
+import torch
 import tqdm
 from pydash import py_
 
-from nav_analysis.train_ppo import construct_envs
-from nav_analysis.rl.ppo.utils import batch_obs
 from nav_analysis.rl.ppo.policy import Policy
+from nav_analysis.rl.ppo.utils import batch_obs
+from nav_analysis.train_ppo import construct_envs
 
 
 def build_parser():

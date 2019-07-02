@@ -1,5 +1,7 @@
-import torch
 import collections
+
+import torch
+
 from nav_analysis.rl.ppo.policy import Policy
 
 

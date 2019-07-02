@@ -4,19 +4,17 @@
 # LICENSE file in the root directory of this source tree.
 
 import contextlib
+import json
 import os
 import os.path as osp
 import random
 import signal
 import sys
-import numpy as np
-import json
-
-
 import threading
 from collections import deque
 from time import sleep, time
 
+import numpy as np
 import torch
 import torch.distributed as dist
 from torch.utils import tensorboard
@@ -29,7 +27,6 @@ from nav_analysis.rl.ppo.utils import (
     update_linear_schedule,
 )
 from nav_analysis.train_ppo import construct_envs
-
 
 torch.backends.cudnn.enabled = True
 torch.backends.cudnn.benchmark = True

@@ -1,10 +1,10 @@
-import subprocess
-import shlex
-import random
-import json
 import collections
-import tqdm
+import json
+import random
+import shlex
+import subprocess
 
+import tqdm
 
 template = r"""
 echo "Using setup for Erik"

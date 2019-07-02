@@ -1,17 +1,17 @@
+import argparse
+import glob
+import os.path as osp
+
+import h5py as h5
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.data
-import argparse
-import h5py as h5
-import numpy as np
 import tqdm
-import os.path as osp
-import glob
+from sklearn.decomposition import PCA
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.svm import LinearSVC
-from sklearn.decomposition import PCA
-
 from torch.utils import tensorboard
 
 torch.backends.cudnn.enabled = True
