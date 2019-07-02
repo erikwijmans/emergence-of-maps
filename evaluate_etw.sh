@@ -20,11 +20,11 @@ export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu/nvidia-opengl:${LD_LIBRARY_PATH
 export GLOG_minloglevel=2
 export MAGNUM_LOG=quiet
 
-SIM_GPU_IDS="0"
-PTH_GPU_ID="0"
+SIM_GPU_IDS="1"
+PTH_GPU_ID="1"
 SENSOR_TYPES="RGB_SENSOR"
 NUM_PROCESSES=8
-CHECKPOINT_MODEL_DIR="data/checkpoints/mp3d-gibson-2plus-se-resneXt50-long-rgb"
+CHECKPOINT_MODEL_DIR="data/checkpoints/mp3d-gibson-2plus-se-resneXt50-long-depth"
 ENV_NAME=$(basename ${CHECKPOINT_MODEL_DIR})
 # ENV_NAME="testing"
 MAX_EPISODE_TIMESTEPS=500

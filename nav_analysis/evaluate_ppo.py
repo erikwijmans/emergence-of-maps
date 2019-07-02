@@ -532,31 +532,25 @@ def main():
 
                     current_episode_reward *= not_done_masks
 
-                    if key_spl != "loop_spl":
-                        avg_spl = (
-                            py_().values().map("spl").mean()(stats_episodes)
+                    def _avg(k):
+                        return "{:.3f}".format(
+                            py_()
+                            .values()
+                            .map(k)
+                            .thru(
+                                lambda lst: np.array(
+                                    lst, dtype=np.float32
+                                ).mean()
+                            )(stats_episodes)
                             if len(stats_episodes) > 0
                             else 0.0
                         )
+
+                    if key_spl != "loop_spl":
                         pbar.set_postfix(
-                            spl=avg_spl,
-                            success=(
-                                py_()
-                                .values()
-                                .map("success")
-                                .mean()(stats_episodes)
-                                if len(stats_episodes) > 0
-                                else 0.0
-                            ),
+                            spl=_avg("spl"), success=_avg("success")
                         )
                     else:
-
-                        def _avg(k):
-                            return "{:.3f}".format(
-                                py_().values().map(k).mean()(stats_episodes)
-                                if len(stats_episodes) > 0
-                                else 0.0
-                            )
 
                         pbar.set_postfix(
                             total_spl=_avg("total_spl"),
