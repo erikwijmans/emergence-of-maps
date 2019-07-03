@@ -233,9 +233,11 @@ class LoopNavRLEnv(NavRLEnv):
             done = True
             self._env.episode_over = True
 
+        always_keep_sensors = {"episode_stage"}
         if self._episode_stage == 1 and not self._give_return_obs:
             for k, v in observations.items():
-                observations[k] = np.zeros_like(v)
+                if k not in always_keep_sensors:
+                    observations[k] = np.zeros_like(v)
 
         return observations, reward, done, info
 
@@ -394,7 +396,7 @@ def construct_envs(args, split="train"):
         if args.model.blind:
             agent_sensors = []
 
-        config_env.SIMULATOR.AGENT_0.SENSORS = agent_sensors
+        config_env.SIMULATOR.AGENT_0.SENSORS = list(agent_sensors)
 
         config_env.SIMULATOR.AGENT_0.TURNAROUND = (
             args.task.nav_task == "loopnav"

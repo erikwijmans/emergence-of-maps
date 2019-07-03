@@ -39,7 +39,7 @@ class CustomFixedCategorical(torch.distributions.Categorical):
 
 
 class CategoricalNet(nn.Module):
-    def __init__(self, num_inputs, num_outputs, task):
+    def __init__(self, num_inputs, num_outputs, task, two_headed):
         super().__init__()
 
         if task == "pointnav":
@@ -50,13 +50,15 @@ class CategoricalNet(nn.Module):
                 nn.ReLU(True),
                 nn.Linear(num_inputs // 2, num_outputs),
             )
-            self.backward_actor = nn.Sequential(
-                nn.Linear(num_inputs, num_inputs // 2),
-                nn.ReLU(True),
-                nn.Linear(num_inputs // 2, num_inputs // 2),
-                nn.ReLU(True),
-                nn.Linear(num_inputs // 2, num_outputs),
-            )
+            if two_headed:
+                self.backward_actor = nn.Sequential(
+                    nn.Linear(num_inputs, num_inputs // 2),
+                    nn.ReLU(True),
+                    nn.Linear(num_inputs // 2, num_inputs // 2),
+                    nn.ReLU(True),
+                    nn.Linear(num_inputs // 2, num_outputs),
+                )
+            self._two_headed = two_headed
 
         self._task = task
 
@@ -67,11 +69,14 @@ class CategoricalNet(nn.Module):
 
     def forward(self, x, obs):
         if self._task == "loopnav":
-            logits = torch.where(
-                obs["episode_stage"].view(-1, 1) == 1,
-                self.backward_actor(x),
-                self.forward_actor(x),
-            )
+            if self._two_headed:
+                logits = torch.where(
+                    obs["episode_stage"].view(-1, 1) == 1,
+                    self.backward_actor(x),
+                    self.forward_actor(x),
+                )
+            else:
+                logits = self.forward_actor(x)
         else:
             logits = self.linear(x)
 

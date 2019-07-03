@@ -141,6 +141,7 @@ def main():
             backbone=args.model.backbone,
             task=args.task.nav_task,
             norm_visual_inputs=args.model.norm_visual_inputs,
+            two_headed=args.model.two_headed,
         )
         actor_critic.to(device)
 

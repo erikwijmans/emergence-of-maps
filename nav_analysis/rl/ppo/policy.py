@@ -30,6 +30,7 @@ class Policy(nn.Module):
         backbone="resnet50",
         task="pointnav",
         norm_visual_inputs=False,
+        two_headed=False,
     ):
         super().__init__()
         self.dim_actions = action_space.n
@@ -44,10 +45,14 @@ class Policy(nn.Module):
             resnet_baseplanes=resnet_baseplanes,
             task=task,
             norm_visual_inputs=norm_visual_inputs,
+            two_headed=two_headed,
         )
 
         self.action_distribution = CategoricalNet(
-            self.net.output_size, self.dim_actions, task=task
+            self.net.output_size,
+            self.dim_actions,
+            task=task,
+            two_headed=two_headed,
         )
 
         assert not blind or not use_aux_losses
@@ -202,6 +207,7 @@ class Net(nn.Module):
         backbone,
         resnet_baseplanes,
         task,
+        two_headed,
         norm_visual_inputs,
     ):
         super().__init__()
@@ -226,7 +232,7 @@ class Net(nn.Module):
             self._n_input_depth = 0
 
         self._norm_inputs = norm_visual_inputs
-        if self._norm_inputs:
+        if self._norm_inputs and not blind:
             self.running_mean_and_var = RunningMeanAndVar(
                 self._n_input_depth + self._n_input_rgb
             )
@@ -297,13 +303,15 @@ class Net(nn.Module):
                 nn.ReLU(True),
                 nn.Linear(hidden_size // 2, 1),
             )
-            self.backward_critic = nn.Sequential(
-                nn.Linear(hidden_size, hidden_size // 2),
-                nn.ReLU(True),
-                nn.Linear(hidden_size // 2, hidden_size // 2),
-                nn.ReLU(True),
-                nn.Linear(hidden_size // 2, 1),
-            )
+            self._two_headed = two_headed
+            if two_headed:
+                self.backward_critic = nn.Sequential(
+                    nn.Linear(hidden_size, hidden_size // 2),
+                    nn.ReLU(True),
+                    nn.Linear(hidden_size // 2, hidden_size // 2),
+                    nn.ReLU(True),
+                    nn.Linear(hidden_size // 2, 1),
+                )
         else:
             self.critic_linear = nn.Linear(hidden_size, 1)
 
@@ -480,11 +488,14 @@ class Net(nn.Module):
         x = torch.cat(x, dim=1)  # concatenate goal vector
         x, rnn_hidden_states = self.forward_rnn(x, rnn_hidden_states, masks)
         if self._task == "loopnav":
-            value = torch.where(
-                observations["episode_stage"].view(-1, 1) == 1,
-                self.backward_critic(x),
-                self.critic(x),
-            )
+            if self._two_headed:
+                value = torch.where(
+                    observations["episode_stage"].view(-1, 1) == 1,
+                    self.backward_critic(x),
+                    self.critic(x),
+                )
+            else:
+                value = self.critic(x)
         else:
             value = self.critic_linear(x)
 

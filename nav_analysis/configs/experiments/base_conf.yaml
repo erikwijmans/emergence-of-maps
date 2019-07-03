@@ -9,10 +9,11 @@ model:
     num_recurrent_layers: 2
 
     backbone: resnet50
-    resnet_baseplnes: 32
+    resnet_baseplanes: 32
     norm_visual_inputs: False
 
     blind: False
+    two_headed: False
 
 optimizer:
     lr: 2.5e-4
