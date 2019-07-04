@@ -5,11 +5,15 @@
 # LICENSE file in the root directory of this source tree.
 
 import argparse
+import os.path as osp
 from collections import defaultdict
 
 import numpy as np
+import omegaconf
 import torch
 import torch.nn as nn
+
+import nav_analysis
 
 
 class Flatten(nn.Module):
@@ -35,17 +39,48 @@ class CustomFixedCategorical(torch.distributions.Categorical):
 
 
 class CategoricalNet(nn.Module):
-    def __init__(self, num_inputs, num_outputs):
+    def __init__(self, num_inputs, num_outputs, task, two_headed):
         super().__init__()
 
-        self.linear = nn.Linear(num_inputs, num_outputs)
+        if task == "pointnav":
+            self.linear = nn.Linear(num_inputs, num_outputs)
+        else:
+            self.forward_actor = nn.Sequential(
+                nn.Linear(num_inputs, num_inputs // 2),
+                nn.ReLU(True),
+                nn.Linear(num_inputs // 2, num_outputs),
+            )
+            if two_headed:
+                self.backward_actor = nn.Sequential(
+                    nn.Linear(num_inputs, num_inputs // 2),
+                    nn.ReLU(True),
+                    nn.Linear(num_inputs // 2, num_inputs // 2),
+                    nn.ReLU(True),
+                    nn.Linear(num_inputs // 2, num_outputs),
+                )
+            self._two_headed = two_headed
 
-        nn.init.orthogonal_(self.linear.weight, gain=0.01)
-        nn.init.constant_(self.linear.bias, 0)
+        self._task = task
 
-    def forward(self, x):
-        x = self.linear(x)
-        return CustomFixedCategorical(logits=x)
+        for layer in self.modules():
+            if isinstance(layer, nn.Linear):
+                nn.init.orthogonal_(layer.weight, gain=0.01)
+                nn.init.constant_(layer.bias, 0)
+
+    def forward(self, x, obs):
+        if self._task == "loopnav":
+            if self._two_headed:
+                logits = torch.where(
+                    obs["episode_stage"].view(-1, 1) == 1,
+                    self.backward_actor(x),
+                    self.forward_actor(x),
+                )
+            else:
+                logits = self.forward_actor(x)
+        else:
+            logits = self.linear(x)
+
+        return CustomFixedCategorical(logits=logits)
 
 
 def _flatten_helper(t, n, tensor):
@@ -291,206 +326,26 @@ def batch_obs(observations):
 
 def ppo_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--clip-param",
-        type=float,
-        default=0.2,
-        help="ppo clip parameter (default: 0.2)",
-    )
-    parser.add_argument(
-        "--ppo-epoch",
-        type=int,
-        default=4,
-        help="number of ppo epochs (default: 4)",
-    )
-    parser.add_argument(
-        "--num-mini-batch",
-        type=int,
-        default=32,
-        help="number of batches for ppo (default: 32)",
-    )
-    parser.add_argument(
-        "--value-loss-coef",
-        type=float,
-        default=0.5,
-        help="value loss coefficient (default: 0.5)",
-    )
-    parser.add_argument(
-        "--entropy-coef",
-        type=float,
-        default=0.01,
-        help="entropy term coefficient (default: 0.01)",
-    )
-    parser.add_argument(
-        "--lr", type=float, default=7e-4, help="learning rate (default: 7e-4)"
-    )
-    parser.add_argument(
-        "--eps",
-        type=float,
-        default=1e-5,
-        help="RMSprop optimizer epsilon (default: 1e-5)",
-    )
-    parser.add_argument(
-        "--max-grad-norm",
-        type=float,
-        default=0.5,
-        help="max norm of gradients (default: 0.5)",
-    )
-    parser.add_argument(
-        "--num-steps",
-        type=int,
-        default=5,
-        help="number of forward steps in A2C (default: 5)",
-    )
-    parser.add_argument("--hidden-size", type=int, default=512)
-    parser.add_argument("--num-recurrent-layers", type=int, default=1)
-    parser.add_argument(
-        "--num-processes",
-        type=int,
-        default=16,
-        help="number of training processes " "to use (default: 16)",
-    )
-    parser.add_argument(
-        "--use-gae",
-        action="store_true",
-        default=False,
-        help="use generalized advantage estimation",
-    )
-    parser.add_argument(
-        "--use-linear-lr-decay",
-        action="store_true",
-        default=False,
-        help="use a linear schedule on the learning rate",
-    )
-    parser.add_argument(
-        "--use-linear-clip-decay",
-        action="store_true",
-        default=False,
-        help="use a linear schedule on the " "ppo clipping parameter",
-    )
-    parser.add_argument(
-        "--gamma",
-        type=float,
-        default=0.99,
-        help="discount factor for rewards (default: 0.99)",
-    )
-    parser.add_argument(
-        "--tau", type=float, default=0.95, help="gae parameter (default: 0.95)"
-    )
-    parser.add_argument(
-        "--log-file", type=str, required=True, help="path for log file"
-    )
-    parser.add_argument(
-        "--reward-window-size",
-        type=int,
-        default=50,
-        help="logging window for rewards",
-    )
-    parser.add_argument(
-        "--log-interval",
-        type=int,
-        default=1,
-        help="number of updates after which metrics are logged",
-    )
-    parser.add_argument(
-        "--save-state-interval",
-        type=int,
-        default=50,
-        help="number of updates after which state is saved, "
-        "this is used for restarting experiments",
-    )
-    parser.add_argument(
-        "--checkpoint-interval",
-        type=int,
-        default=50,
-        help="number of updates after which models are checkpointed",
-    )
-    parser.add_argument(
-        "--checkpoint-folder",
-        type=str,
-        required=True,
-        help="folder for storing checkpoints",
-    )
-    parser.add_argument(
-        "--sim-gpu-id",
-        type=int,
-        required=True,
-        help="gpu id on which scenes are loaded",
-    )
-    parser.add_argument(
-        "--pth-gpu-id",
-        type=int,
-        required=True,
-        help="gpu id on which pytorch runs",
-    )
-    parser.add_argument(
-        "--num-updates",
-        type=int,
-        default=10000,
-        help="number of PPO updates to run",
-    )
-    parser.add_argument(
-        "--sensors",
-        type=str,
-        default="RGB_SENSOR,DEPTH_SENSOR",
-        help="comma separated string containing different sensors to use,"
-        "currently 'RGB_SENSOR' and 'DEPTH_SENSOR' are supported",
-    )
-    parser.add_argument(
-        "--task-config",
-        type=str,
-        default="tasks/pointnav.yaml",
-        help="path to config yaml containing information about task",
-    )
-    parser.add_argument("--seed", type=int, default=100)
-    parser.add_argument("--shuffle-interval", type=int, required=True)
-    parser.add_argument("--blind", type=int, default=0)
-    parser.add_argument(
-        "--pointgoal-sensor-type",
-        type=str,
-        default="DENSE",
-        choices=["DENSE", "SPARSE"],
-    )
-    parser.add_argument(
-        "--pointgoal-sensor-dimensions", type=int, choices=[2, 3]
-    )
-    parser.add_argument(
-        "--pointgoal-sensor-format", type=str, choices=["CARTESIAN", "POLAR"]
-    )
-    parser.add_argument(
-        "--nav-task", type=str, required=True, choices=["pointnav", "loopnav"]
-    )
-    parser.add_argument("--use-aux-losses", type=int, default=0)
-    parser.add_argument(
-        "--rnn-type",
-        type=str,
-        default="GRU",
-        choices=["LSTM", "GRU", "LN-LSTM"],
-    )
-    parser.add_argument("--noise-truncate", type=float, default=0.0)
-    parser.add_argument("--resnet-baseplanes", type=int, default=32)
-    parser.add_argument("--max-episode-timesteps", type=int, required=True)
-    parser.add_argument(
-        "--load-ckpt", default=None, help="path to load checkpoint from"
-    )
-    parser.add_argument("--weight-decay", default=0.0, type=float)
-    parser.add_argument(
-        "--backbone",
-        default="resnet50",
-        choices=[
-            "resnet50",
-            "se_resneXt50",
-            "se_resneXt101",
-            "se_resneXt25",
-            "resnet25",
-            "resneXt25",
-        ],
-    )
-    parser.add_argument(
-        "--tensorboard-dir",
-        type=str,
-        required=True,
-        help="path to logging dir for Tensorboard",
-    )
 
-    return parser
+    parser.add_argument("--extra-confs", type=str, nargs="*")
+    parser.add_argument("--opts", type=str, nargs="*")
+
+    args = parser.parse_args()
+
+    opts = omegaconf.OmegaConf.load(
+        osp.join(
+            osp.dirname(nav_analysis.__file__),
+            "configs/experiments/base_conf.yaml",
+        )
+    )
+    for conf_name in args.extra_confs if args.extra_confs is not None else []:
+        opts.merge_with(
+            omegaconf.OmegaConf.load(
+                osp.join(osp.dirname(nav_analysis.__file__), conf_name)
+            )
+        )
+
+    if args.opts is not None:
+        opts.merge_with_dotlist(args.opts)
+
+    return opts

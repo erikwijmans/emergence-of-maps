@@ -1,6 +1,7 @@
-from setuptools import setup, find_packages
 import glob
 import os.path as osp
+
+from setuptools import find_packages, setup
 
 setup(
     name="nav_analysis",

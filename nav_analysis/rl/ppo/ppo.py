@@ -236,16 +236,9 @@ class PPO(nn.Module):
                     - dist_entropy * self.entropy_coef
                     + aux_loss
                 )
+                self.reducer.prepare_for_backward([total_loss])
 
-                if self.reducer is not None:
-                    find_unused_params = False
-                    if find_unused_params:
-                        self.reducer.prepare_for_backward([total_loss])
-                    else:
-                        self.reducer.prepare_for_backward([])
-
-                with amp.scale_loss(total_loss, self.optimizer) as scaled_loss:
-                    scaled_loss.backward()
+                total_loss.backward()
 
                 nn.utils.clip_grad_norm_(
                     self.actor_critic.parameters(), self.max_grad_norm

@@ -11,9 +11,9 @@ import torch.nn.functional as F
 import torchvision
 
 import nav_analysis.rl.resnet
+from nav_analysis.rl.layer_norm_lstm import LayerNormLSTM
 from nav_analysis.rl.ppo.utils import CategoricalNet, Flatten
-
-#  from nav_analysis.rl.layer_norm_lstm import LayerNormLSTM
+from nav_analysis.rl.running_mean_and_var import RunningMeanAndVar
 
 
 class Policy(nn.Module):
@@ -28,6 +28,9 @@ class Policy(nn.Module):
         rnn_type="GRU",
         resnet_baseplanes=32,
         backbone="resnet50",
+        task="pointnav",
+        norm_visual_inputs=False,
+        two_headed=False,
     ):
         super().__init__()
         self.dim_actions = action_space.n
@@ -40,10 +43,16 @@ class Policy(nn.Module):
             rnn_type=rnn_type,
             backbone=backbone,
             resnet_baseplanes=resnet_baseplanes,
+            task=task,
+            norm_visual_inputs=norm_visual_inputs,
+            two_headed=two_headed,
         )
 
         self.action_distribution = CategoricalNet(
-            self.net.output_size, self.dim_actions
+            self.net.output_size,
+            self.dim_actions,
+            task=task,
+            two_headed=two_headed,
         )
 
         assert not blind or not use_aux_losses
@@ -72,7 +81,7 @@ class Policy(nn.Module):
         value, actor_features, rnn_hidden_states, _ = self.net(
             observations, rnn_hidden_states, prev_actions, masks
         )
-        distribution = self.action_distribution(actor_features)
+        distribution = self.action_distribution(actor_features, observations)
 
         if deterministic:
             action = distribution.mode()
@@ -106,7 +115,7 @@ class Policy(nn.Module):
         value, actor_features, rnn_hidden_states, cnn_feats = self.net(
             observations, rnn_hidden_states, prev_actions, masks
         )
-        distribution = self.action_distribution(actor_features)
+        distribution = self.action_distribution(actor_features, observations)
 
         action_log_probs = distribution.log_probs(action)
         distribution_entropy = distribution.entropy().mean()
@@ -197,18 +206,21 @@ class Net(nn.Module):
         rnn_type,
         backbone,
         resnet_baseplanes,
+        task,
+        two_headed,
+        norm_visual_inputs,
     ):
         super().__init__()
 
         if "rgb" in observation_space.spaces:
             self._n_input_rgb = observation_space.spaces["rgb"].shape[2]
-            self._n_input_rgb = 1
-            self.register_buffer(
-                "grayscale_kernel",
-                torch.tensor(
-                    [0.2126, 0.7152, 0.0722], dtype=torch.float32
-                ).view(1, 3, 1, 1),
-            )
+            self._n_input_rgb = 3
+            #  self.register_buffer(
+            #  "grayscale_kernel",
+            #  torch.tensor([0.2126, 0.7152, 0.0722], dtype=torch.float32).view(
+            #  1, 3, 1, 1
+            #  ),
+            #  )
             spatial_size = observation_space.spaces["rgb"].shape[0] // 2
         else:
             self._n_input_rgb = 0
@@ -219,6 +231,12 @@ class Net(nn.Module):
         else:
             self._n_input_depth = 0
 
+        self._norm_inputs = norm_visual_inputs
+        if self._norm_inputs and not blind:
+            self.running_mean_and_var = RunningMeanAndVar(
+                self._n_input_depth + self._n_input_rgb
+            )
+
         self.prev_action_embedding = nn.Embedding(5, 32)
         self._n_prev_action = 32
 
@@ -228,6 +246,20 @@ class Net(nn.Module):
             self._n_input_goal -= 1
         self.tgt_embed = nn.Linear(self._n_input_goal, 32)
         self._n_input_goal = 32
+
+        if "gps_and_compass" in observation_space.spaces:
+            self.gps_compass_embed = nn.Linear(
+                observation_space.spaces["gps_and_compass"].shape[0], 32
+            )
+            self._n_input_goal += 32
+        else:
+            self.gps_compass_embed = None
+
+        if "episode_stage" in observation_space.spaces:
+            self.stage_embed = nn.Embedding(2, 32)
+            self._n_input_goal += 32
+        else:
+            self.stage_embed = None
 
         self._hidden_size = hidden_size
 
@@ -263,7 +295,25 @@ class Net(nn.Module):
             self.rnn = getattr(nn, rnn_type)(
                 rnn_input_size, hidden_size, num_layers=num_recurrent_layers
             )
-        self.critic_linear = nn.Linear(hidden_size, 1)
+
+        self._task = task
+        if task == "loopnav":
+            self.critic = nn.Sequential(
+                nn.Linear(hidden_size, hidden_size // 2),
+                nn.ReLU(True),
+                nn.Linear(hidden_size // 2, 1),
+            )
+            self._two_headed = two_headed
+            if two_headed:
+                self.backward_critic = nn.Sequential(
+                    nn.Linear(hidden_size, hidden_size // 2),
+                    nn.ReLU(True),
+                    nn.Linear(hidden_size // 2, hidden_size // 2),
+                    nn.ReLU(True),
+                    nn.Linear(hidden_size // 2, 1),
+                )
+        else:
+            self.critic_linear = nn.Linear(hidden_size, 1)
 
         self.layer_init()
         self.train()
@@ -294,8 +344,10 @@ class Net(nn.Module):
             elif "bias" in name:
                 nn.init.constant_(param, 0)
 
-        nn.init.orthogonal_(self.critic_linear.weight, gain=1)
-        nn.init.constant_(self.critic_linear.bias, val=0)
+        for layer in self.modules():
+            if isinstance(layer, nn.Linear):
+                nn.init.orthogonal_(layer.weight, gain=0.01)
+                nn.init.constant_(layer.bias, 0)
 
     def _pack_hidden(self, hidden_states):
         if "LSTM" in self._rnn_type:
@@ -383,10 +435,10 @@ class Net(nn.Module):
             rgb_observations = observations["rgb"]
             # permute tensor to dimension [BATCH x CHANNEL x HEIGHT X WIDTH]
             rgb_observations = rgb_observations.permute(0, 3, 1, 2)
-            rgb_observations = rgb_observations / 255.0  # normalize RGB
-            rgb_observations = (rgb_observations * self.grayscale_kernel).sum(
-                1, keepdim=True
-            )
+            #  rgb_observations = rgb_observations / 255.0  # normalize RGB
+            #  rgb_observations = (rgb_observations * self.grayscale_kernel).sum(
+            #  1, keepdim=True
+            #  )
 
             cnn_input.append(rgb_observations)
 
@@ -416,12 +468,35 @@ class Net(nn.Module):
         if len(cnn_input) > 0:
             cnn_input = torch.cat(cnn_input, dim=1)
             cnn_input = F.avg_pool2d(cnn_input, 2)
+            if self._norm_inputs:
+                cnn_input = self.running_mean_and_var(cnn_input)
+
             cnn_feats = self.cnn(cnn_input)
             x += [cnn_feats]
 
         x += [goal_observations, prev_actions]
+        if self.gps_compass_embed is not None:
+            x += [self.gps_compass_embed(observations["gps_and_compass"])]
+
+        if self.stage_embed is not None:
+            x += [
+                self.stage_embed(
+                    observations["episode_stage"].long().squeeze(-1)
+                )
+            ]
 
         x = torch.cat(x, dim=1)  # concatenate goal vector
         x, rnn_hidden_states = self.forward_rnn(x, rnn_hidden_states, masks)
+        if self._task == "loopnav":
+            if self._two_headed:
+                value = torch.where(
+                    observations["episode_stage"].view(-1, 1) == 1,
+                    self.backward_critic(x),
+                    self.critic(x),
+                )
+            else:
+                value = self.critic(x)
+        else:
+            value = self.critic_linear(x)
 
-        return self.critic_linear(x), x, rnn_hidden_states, cnn_feats
+        return value, x, rnn_hidden_states, cnn_feats

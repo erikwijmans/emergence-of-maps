@@ -3,29 +3,13 @@ import os
 import os.path as osp
 import shlex
 import subprocess
+import datetime
 import uuid
 
-import filelock
-import tinydb
-
-ENV_DB = osp.abspath(osp.join(osp.dirname(__file__), "envs_for_jobs.json"))
-ENV_DB_LOCK = osp.abspath(
-    osp.join(osp.dirname(__file__), "envs_for_jobs.json.lock")
-)
-
 user = getpass.getuser()
-assert user in ["erikwijmans", "akadian"]
-
-if user == "erikwijmans":
-    BASE_ENV = "nav-analysis-base"
-    CONDA_ACTIVATE_CMD = (
-        "source /private/home/erikwijmans/miniconda3/etc/profile.d/conda.sh"
-    )
 
 
 def call(cmd, cwd=None, capture_out=False, env=None):
-    cmd = "{} && {}".format(CONDA_ACTIVATE_CMD, cmd)
-    cmd = 'bash -c "{}"'.format(cmd)
     cmd = shlex.split(cmd)
 
     if capture_out:
@@ -43,37 +27,39 @@ def main():
     with open(script_name, "r") as f:
         script_content = f.read()
 
-    _id = uuid.uuid4()
-    env_name = "nav-analysis-{}".format(_id)
+    time = datetime.datetime.now()
 
-    call("conda create --name {} --clone {}".format(env_name, BASE_ENV))
-    call("conda deactivate")
-    call("conda activate {} && pip install .".format(env_name))
-    call(
-        "conda activate {} && pip install .".format(env_name),
-        cwd=os.path.join(os.getcwd(), "habitat-api-navigation-analysis"),
+    code_dir = osp.join(
+        os.getcwd(),
+        "sandbox",
+        "code",
+        "{}-{}-{}".format(time.year, time.month, time.day),
+        "{}-{}-{}".format(time.hour, time.minute, time.second),
     )
 
+    for cwd in [
+        os.getcwd(),
+        osp.join(os.getcwd(), "habitat-api-navigation-analysis"),
+    ]:
+        call(
+            "python setup.py build --force --build-lib {}".format(code_dir),
+            cwd=cwd,
+            capture_out=True,
+        )
+
+    _id = uuid.uuid4()
     launch_script_name = "/tmp/{}.sh".format(_id)
     with open(launch_script_name, "w") as f:
         f.write(script_content)
 
-    env_for_job = {
-        k: v for k, v in os.environ.items() if k not in {"PYTHONPATH"}
-    }
+    env_for_job = {k: v for k, v in os.environ.items()}
+    env_for_job["PYTHONPATH"] = code_dir
 
     sbatch_res = call(
-        "sbatch {} {}".format(launch_script_name, env_name),
-        capture_out=True,
-        cwd=os.path.join(os.getcwd(), "sandbox"),
+        "sbatch {}".format(launch_script_name),
+        cwd=osp.join(os.getcwd(), "sandbox"),
         env=env_for_job,
     )
-    sbatch_res = sbatch_res.decode("utf-8").strip()
-    print(sbatch_res)
-    jid = int(sbatch_res.split(" ")[-1])
-
-    with filelock.FileLock(ENV_DB_LOCK), tinydb.TinyDB(ENV_DB) as db:
-        db.insert(dict(jid=jid, env_name=env_name))
 
     os.remove(launch_script_name)
 

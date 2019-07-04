@@ -1,0 +1,13 @@
+model:
+    num_recurrent_layers: 2
+    blind: True
+
+ppo:
+    num_processes: 16
+    num_steps: 512
+
+task:
+    nav_task: loopnav
+    loopnav_give_return_inputs: True
+    task_config: tasks/loopnav/mp3d-gibson.loopnav.yaml
+    max_episode_timesteps: 1000

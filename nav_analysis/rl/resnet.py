@@ -153,7 +153,10 @@ class Bottleneck(nn.Module):
     def _impl(self, x):
         identity = x
 
-        out = self.convs(x)
+        if x.requires_grad and use_checkpoint:
+            out = torch.utils.checkpoint.checkpoint(self.convs, x)
+        else:
+            out = self.convs(x)
 
         if self.downsample is not None:
             identity = self.downsample(x)
@@ -161,10 +164,7 @@ class Bottleneck(nn.Module):
         return self.relu(out + identity)
 
     def forward(self, x):
-        if x.requires_grad and use_checkpoint:
-            return torch.utils.checkpoint.checkpoint(self._impl, x)
-        else:
-            return self._impl(x)
+        return self._impl(x)
 
 
 class SEBottleneck(Bottleneck):
@@ -186,7 +186,10 @@ class SEBottleneck(Bottleneck):
     def _impl(self, x):
         identity = x
 
-        out = self.convs(x)
+        if x.requires_grad and use_checkpoint:
+            out = torch.utils.checkpoint.checkpoint(self.convs, x)
+        else:
+            out = self.convs(x)
         out = self.se(out) * out
 
         if self.downsample is not None:
