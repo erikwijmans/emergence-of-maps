@@ -95,7 +95,9 @@ def main():
             num_samples = int(num_samples)
             collision_labels = np.zeros((num_samples,), dtype=np.int64)
             positions = np.zeros((num_samples, 2), dtype=np.float32)
-            goal_centric_positions = np.zeros((num_samples, 2), dtype=np.float32)
+            goal_centric_positions = np.zeros(
+                (num_samples, 2), dtype=np.float32
+            )
             goal_vectors = np.zeros((num_samples, 3), dtype=np.float32)
             hidden_states = np.zeros(
                 (
@@ -136,19 +138,28 @@ def main():
                     )
                     positions[next_idx] = infos[i]["ego_pose"]
                     goal_centric_positions[next_idx] = infos[i]["goal_pose"]
-                    goal_vectors[next_idx] = batch["pointgoal"][i].cpu().numpy()
+                    goal_vectors[next_idx] = (
+                        batch["pointgoal"][i].cpu().numpy()
+                    )
                     hidden_states[next_idx] = (
-                        test_recurrent_hidden_states[:, i].cpu().view(-1).numpy()
+                        test_recurrent_hidden_states[:, i]
+                        .cpu()
+                        .view(-1)
+                        .numpy()
                     )
                     num_collisions += collision_labels[next_idx]
                     next_idx += 1
 
                     pbar.update()
-                    pbar.set_postfix(pc="{:.3f}".format(num_collisions / next_idx))
+                    pbar.set_postfix(
+                        pc="{:.3f}".format(num_collisions / next_idx)
+                    )
 
                 outputs = envs.step([a[0].item() for a in actions])
 
-                observations, rewards, dones, infos = [list(x) for x in zip(*outputs)]
+                observations, rewards, dones, infos = [
+                    list(x) for x in zip(*outputs)
+                ]
                 batch = batch_obs(observations)
                 for sensor in batch:
                     batch[sensor] = batch[sensor].to(device)
@@ -164,7 +175,9 @@ def main():
             f.create_dataset("positions", data=positions)
             f.create_dataset("hidden_states", data=hidden_states)
             f.create_dataset("goal_vectors", data=goal_vectors)
-            f.create_dataset("goal_centric_positions", data=goal_centric_positions)
+            f.create_dataset(
+                "goal_centric_positions", data=goal_centric_positions
+            )
 
 
 if __name__ == "__main__":

@@ -13,6 +13,8 @@
 #SBATCH --open-mode=append
 echo "#SBATCH --constraint=volta32gb"
 
+echo ${PYTHONPATH}
+
 echo "Using setup for Erik"
 . /private/home/erikwijmans/miniconda3/etc/profile.d/conda.sh
 conda deactivate
@@ -28,8 +30,8 @@ ENV_NAME="gibson-all-se-neXt25-depth"
 ENV_NAME="mp3d-gibson-2plus-se-resneXt50-long-depth"
 # ENV_NAME="gibson-public-50-single-GPU-depth"
 # ENV_NAME="gibson-2plus-se-neXt101-lstm1024-long-depth"
-# ENV_NAME="gibson-public-loopnav-noreturn-two-headed-long-blind"
-ENV_NAME="testing"
+ENV_NAME="mp3d-gibson-all-loopnav-noreturn-baseline-blind"
+# ENV_NAME="mp3d-gibson-50-online-long-depth"
 CHECKPOINT="data/checkpoints/${ENV_NAME}"
 
 module purge
@@ -44,10 +46,9 @@ export MAGNUM_LOG=quiet
 export MASTER_ADDR=$(srun --ntasks=1 hostname 2>&1 | tail -n1)
 set -x
 srun python -u -m nav_analysis.train_ppo_distrib \
-    --extra-confs configs/experiments/loopnav_no_return.yaml \
+    --extra-confs configs/experiments/loopnav_no_return_baseline.yaml \
     --opts \
     "logging.log_file=${EXP_DIR}/log.txt" \
     "logging.checkpoint_folder=${CHECKPOINT}" \
     "logging.tensorboard_dir=runs/${ENV_NAME}" \
-    "task.task_config=tasks/loopnav/gibson-public.loopnav.yaml" \
     "model.two_headed=False"

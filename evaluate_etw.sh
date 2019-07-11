@@ -24,11 +24,14 @@ SIM_GPU_IDS="1"
 PTH_GPU_ID="1"
 SENSOR_TYPES="RGB_SENSOR"
 NUM_PROCESSES=8
-CHECKPOINT_MODEL_DIR="data/checkpoints/mp3d-gibson-2plus-se-resneXt50-long-depth"
+CHECKPOINT_MODEL_DIR="data/checkpoints/gibson-2plus-se-resneXt50-long-rgb"
 ENV_NAME=$(basename ${CHECKPOINT_MODEL_DIR})
 # ENV_NAME="testing"
 MAX_EPISODE_TIMESTEPS=500
-TASK_CONFIG="tasks/gibson.pointnav.yaml"
+# TASK_CONFIG="tasks/loopnav/gibson-public.loopnav.yaml"
+# NAV_TASK="loopnav"
+
+TASK_CONFIG="tasks/gibson-public.pointnav.yaml"
 NAV_TASK="pointnav"
 
 if [ ${NAV_TASK} == "loopnav" ]
@@ -57,6 +60,7 @@ python -u -m nav_analysis.evaluate_ppo \
     --count-test-episodes ${COUNT_TEST_EPISODES} \
     --video ${VIDEO} \
     --out-dir-video ${OUT_DIR_VIDEO} \
+    --eval-task-config ${TASK_CONFIG} \
     --nav-task ${NAV_TASK} \
     --tensorboard-dir "runs/${ENV_NAME}" \
     --nav-env-verbose 0 \

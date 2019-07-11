@@ -54,11 +54,15 @@ def val_env_fn(config_env, config_baseline, rank):
 
     if config_env.SIMULATOR.AGENT_0.TURNAROUND:
         env = LoopNavRLEnv(
-            config_env=config_env, config_baseline=config_baseline, dataset=dataset
+            config_env=config_env,
+            config_baseline=config_baseline,
+            dataset=dataset,
         )
     else:
         env = NavRLEnv(
-            config_env=config_env, config_baseline=config_baseline, dataset=dataset
+            config_env=config_env,
+            config_baseline=config_baseline,
+            dataset=dataset,
         )
 
     env.seed(rank)
@@ -72,7 +76,9 @@ def images_to_video(images, output_dir, video_name):
     for im in tqdm.tqdm(images):
         writer.append_data(im)
     writer.close()
-    logger.info("Generated video: {}".format(os.path.join(output_dir, video_name)))
+    logger.info(
+        "Generated video: {}".format(os.path.join(output_dir, video_name))
+    )
 
 
 def poll_checkpoint_folder(checkpoint_folder, previous_ckpt_ind):
@@ -92,7 +98,9 @@ def construct_val_envs(args):
     env_configs = []
     baseline_configs = []
 
-    basic_config = get_config(config_file=args.task.task_config, config_dir=CFG_DIR)
+    basic_config = get_config(
+        config_file=args.task.task_config, config_dir=CFG_DIR
+    )
     basic_config.defrost()
     basic_config.DATASET.SPLIT = "val"
     basic_config.freeze()
@@ -100,7 +108,8 @@ def construct_val_envs(args):
     scenes = PointNavDatasetV1.get_scenes_to_load(basic_config.DATASET)
 
     assert len(scenes) >= args.ppo.num_processes, (
-        "reduce the number of processes as there " "aren't enough number of scenes"
+        "reduce the number of processes as there "
+        "aren't enough number of scenes"
     )
     scene_splits = [[] for _ in range(args.ppo.num_processes)]
     next_split_id = 0
@@ -112,18 +121,26 @@ def construct_val_envs(args):
     sim_gpus = [args.general.sim_gpu_id]
 
     for i in range(args.ppo.num_processes):
-        config_env = get_config(config_file=args.task.task_config, config_dir=CFG_DIR)
+        config_env = get_config(
+            config_file=args.task.task_config, config_dir=CFG_DIR
+        )
         config_env.defrost()
 
         config_env.DATASET.SPLIT = "val"
         config_env.DATASET.POINTNAVV1.CONTENT_SCENES = scene_splits[i]
 
-        config_env.SIMULATOR.HABITAT_SIM_V0.GPU_DEVICE_ID = sim_gpus[i % len(sim_gpus)]
-        config_env.TASK.POINTGOAL_SENSOR.SENSOR_TYPE = args.task.pointgoal_sensor_type
+        config_env.SIMULATOR.HABITAT_SIM_V0.GPU_DEVICE_ID = sim_gpus[
+            i % len(sim_gpus)
+        ]
+        config_env.TASK.POINTGOAL_SENSOR.SENSOR_TYPE = (
+            args.task.pointgoal_sensor_type
+        )
         config_env.TASK.POINTGOAL_SENSOR.SENSOR_DIMENSIONS = (
             args.task.pointgoal_sensor_dimensions
         )
-        config_env.TASK.POINTGOAL_SENSOR.GOAL_FORMAT = args.task.pointgoal_sensor_format
+        config_env.TASK.POINTGOAL_SENSOR.GOAL_FORMAT = (
+            args.task.pointgoal_sensor_format
+        )
         config_env.DATASET.TYPE = "PointNav-v1"
 
         agent_sensors = list(args.task.agent_sensors)
@@ -146,7 +163,9 @@ def construct_val_envs(args):
             config_env.SIMULATOR.RGB_SENSOR.HEIGHT = 2
             config_env.SIMULATOR.RGB_SENSOR.WIDTH = 2
 
-        config_env.SIMULATOR.AGENT_0.TURNAROUND = args.task.nav_task == "loopnav"
+        config_env.SIMULATOR.AGENT_0.TURNAROUND = (
+            args.task.nav_task == "loopnav"
+        )
 
         if args.task.nav_task == "loopnav":
             config_env.TASK.MEASUREMENTS = ["LOOPSPL", "LOOP_D_DELTA"]
@@ -167,7 +186,9 @@ def construct_val_envs(args):
                 config_env.SIMULATOR.DEPTH_SENSOR.WIDTH = 1024
                 config_env.SIMULATOR.DEPTH_SENSOR.HEIGHT = 1024
 
-        config_env.ENVIRONMENT.MAX_EPISODE_STEPS = args.task.max_episode_timesteps
+        config_env.ENVIRONMENT.MAX_EPISODE_STEPS = (
+            args.task.max_episode_timesteps
+        )
 
         config_env.TASK.VERBOSE = args.task.nav_env_verbose
 
@@ -182,7 +203,13 @@ def construct_val_envs(args):
     envs = habitat.VectorEnv(
         make_env_fn=val_env_fn,
         env_fn_args=tuple(
-            tuple(zip(env_configs, baseline_configs, range(args.ppo.num_processes)))
+            tuple(
+                zip(
+                    env_configs,
+                    baseline_configs,
+                    range(args.ppo.num_processes),
+                )
+            )
         ),
     )
 
@@ -278,7 +305,7 @@ def main():
                 backbone=trained_args.model.backbone,
                 task=trained_args.task.nav_task,
                 norm_visual_inputs=trained_args.model.norm_visual_inputs,
-                two_headed=trained_args.model.two_headed
+                two_headed=trained_args.model.two_headed,
             )
             actor_critic.load_state_dict(
                 {
@@ -304,7 +331,9 @@ def main():
             for sensor in batch:
                 batch[sensor] = batch[sensor].to(device)
 
-            current_episode_reward = torch.zeros(envs.num_envs, 1, device=device)
+            current_episode_reward = torch.zeros(
+                envs.num_envs, 1, device=device
+            )
 
             test_recurrent_hidden_states = torch.zeros(
                 actor_critic.net.num_recurrent_layers,
@@ -385,13 +414,15 @@ def main():
                                 for k in infos[i][key_spl]:
                                     res[k] = infos[i][key_spl][k]
 
-                                res["success"] = int(infos[i][key_spl]["total_spl"] > 0)
-                                res["stage_1_d_delta"] = infos[i]["loop_d_delta"][
-                                    "stage_1"
-                                ]
-                                res["stage_2_d_delta"] = infos[i]["loop_d_delta"][
-                                    "stage_2"
-                                ]
+                                res["success"] = int(
+                                    infos[i][key_spl]["total_spl"] > 0
+                                )
+                                res["stage_1_d_delta"] = infos[i][
+                                    "loop_d_delta"
+                                ]["stage_1"]
+                                res["stage_2_d_delta"] = infos[i][
+                                    "loop_d_delta"
+                                ]["stage_2"]
 
                                 logger.info(
                                     "EP {}, S1 SPL: {:.3f}, "
@@ -405,12 +436,18 @@ def main():
                                 )
 
                                 logger.info(
-                                    "Num parallel envs: {}".format(envs.num_envs)
+                                    "Num parallel envs: {}".format(
+                                        envs.num_envs
+                                    )
                                 )
 
-                                stats_episodes[current_episodes[i].episode_id] = res
+                                stats_episodes[
+                                    current_episodes[i].episode_id
+                                ] = res
                             else:
-                                stats_episodes[current_episodes[i].episode_id] = {
+                                stats_episodes[
+                                    current_episodes[i].episode_id
+                                ] = {
                                     key_spl: infos[i][key_spl],
                                     "success": (infos[i][key_spl] > 0),
                                 }
@@ -440,20 +477,26 @@ def main():
                                     )
 
                                 images_to_video(
-                                    rgb_frames[i], args.out_dir_video, video_name
+                                    rgb_frames[i],
+                                    args.out_dir_video,
+                                    video_name,
                                 )
                                 rgb_frames[i] = []
 
                         elif args.video == 1:
                             # episode continuing, record frames
                             size = observations[i]["rgb"].shape[0]
-                            frame = np.empty((size, 2 * size, 3), dtype=np.uint8)
+                            frame = np.empty(
+                                (size, 2 * size, 3), dtype=np.uint8
+                            )
                             frame[:, :size] = observations[i]["rgb"][:, :, :3]
 
                             if infos[i]["collisions"]["is_collision"]:
                                 frame[:, 1024:] = [0, 0, 0]
 
-                                mask = np.ones((frame.shape[0], frame.shape[1]))
+                                mask = np.ones(
+                                    (frame.shape[0], frame.shape[1])
+                                )
                                 mask[30:-30, 30 : 1024 - 30] = 0
                                 mask = mask == 1
                                 alpha = 0.5
@@ -472,13 +515,16 @@ def main():
                                 round(scale * top_down_map.shape[1]),
                             )
 
-                            map_agent_pos = infos[i]["top_down_map"]["map_agent_pos"]
+                            map_agent_pos = infos[i]["top_down_map"][
+                                "map_agent_pos"
+                            ]
                             map_agent_pos[0] = int(map_agent_pos[0] * scale_x)
                             map_agent_pos[1] = int(map_agent_pos[1] * scale_y)
                             top_down_map = maps.draw_agent(
                                 top_down_map,
                                 map_agent_pos,
-                                -infos[i]["top_down_map"]["agent_angle"] + np.pi / 2,
+                                -infos[i]["top_down_map"]["agent_angle"]
+                                + np.pi / 2,
                                 agent_radius_px=7 * 4,
                             )
                             if top_down_map.shape[0] > top_down_map.shape[1]:
@@ -499,15 +545,19 @@ def main():
                             py_()
                             .values()
                             .map(k)
-                            .thru(lambda lst: np.array(lst, dtype=np.float32).mean())(
-                                stats_episodes
-                            )
+                            .thru(
+                                lambda lst: np.array(
+                                    lst, dtype=np.float32
+                                ).mean()
+                            )(stats_episodes)
                             if len(stats_episodes) > 0
                             else 0.0
                         )
 
                     if key_spl != "loop_spl":
-                        pbar.set_postfix(spl=_avg("spl"), success=_avg("success"))
+                        pbar.set_postfix(
+                            spl=_avg("spl"), success=_avg("success")
+                        )
                     else:
 
                         pbar.set_postfix(
@@ -532,7 +582,9 @@ def main():
                         ]
                         prev_actions = prev_actions[state_index]
                         not_done_masks = not_done_masks[state_index]
-                        current_episode_reward = current_episode_reward[state_index]
+                        current_episode_reward = current_episode_reward[
+                            state_index
+                        ]
 
                         for k, v in batch.items():
                             batch[k] = v[state_index]
@@ -542,7 +594,9 @@ def main():
 
             logger.info("Checkpoint {} results:".format(current_ckpt))
 
-            total_success = py_().values().map("success").map(int).sum()(stats_episodes)
+            total_success = (
+                py_().values().map("success").map(int).sum()(stats_episodes)
+            )
 
             logger.info(
                 "Average episode success: {:.6f}".format(
@@ -562,10 +616,14 @@ def main():
                 avg_stage_2_spl = total_stage_2_spl / len(stats_episodes)
 
                 logger.info(
-                    "Average episode stage-1 SPL: {:.6f}".format(avg_stage_1_spl)
+                    "Average episode stage-1 SPL: {:.6f}".format(
+                        avg_stage_1_spl
+                    )
                 )
                 logger.info(
-                    "Average episode stage-2 SPL: {:.6f}".format(avg_stage_2_spl)
+                    "Average episode stage-2 SPL: {:.6f}".format(
+                        avg_stage_2_spl
+                    )
                 )
 
                 tb_writer.add_scalars(
@@ -584,7 +642,10 @@ def main():
 
                 tb_writer.add_scalars(
                     "val",
-                    {"SPL": avg_spl, "Success": total_success / len(stats_episodes)},
+                    {
+                        "SPL": avg_spl,
+                        "Success": total_success / len(stats_episodes),
+                    },
                     prev_ckpt_ind,
                 )
 

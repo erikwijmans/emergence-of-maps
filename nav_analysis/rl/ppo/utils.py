@@ -109,11 +109,16 @@ class RolloutStorage:
 
         for sensor in observation_space.spaces:
             self.observations[sensor] = torch.zeros(
-                num_steps + 1, num_envs, *observation_space.spaces[sensor].shape
+                num_steps + 1,
+                num_envs,
+                *observation_space.spaces[sensor].shape
             )
 
         self.recurrent_hidden_states = torch.zeros(
-            num_steps + 1, num_recurrent_layers, num_envs, recurrent_hidden_state_size
+            num_steps + 1,
+            num_recurrent_layers,
+            num_envs,
+            recurrent_hidden_state_size,
         )
 
         self.rewards = torch.zeros(num_steps, num_envs, 1)
@@ -164,8 +169,12 @@ class RolloutStorage:
         entropy,
     ):
         for sensor in observations:
-            self.observations[sensor][self.step + 1].copy_(observations[sensor])
-        self.recurrent_hidden_states[self.step + 1].copy_(recurrent_hidden_states)
+            self.observations[sensor][self.step + 1].copy_(
+                observations[sensor]
+            )
+        self.recurrent_hidden_states[self.step + 1].copy_(
+            recurrent_hidden_states
+        )
         self.actions[self.step].copy_(actions)
         self.prev_actions[self.step + 1].copy_(actions)
         self.action_log_probs[self.step].copy_(action_log_probs)
@@ -178,9 +187,13 @@ class RolloutStorage:
 
     def after_update(self):
         for sensor in self.observations:
-            self.observations[sensor][0].copy_(self.observations[sensor][self.step])
+            self.observations[sensor][0].copy_(
+                self.observations[sensor][self.step]
+            )
 
-        self.recurrent_hidden_states[0].copy_(self.recurrent_hidden_states[self.step])
+        self.recurrent_hidden_states[0].copy_(
+            self.recurrent_hidden_states[self.step]
+        )
         self.masks[0].copy_(self.masks[self.step])
         self.prev_actions[0].copy_(self.prev_actions[self.step])
 
@@ -208,7 +221,6 @@ class RolloutStorage:
                     + self.rewards[step]
                     + max_ent_coeff * self.entropy[step]
                 )
-
 
     def recurrent_generator(self, advantages, num_mini_batch):
         num_processes = self.rewards.size(1)
@@ -258,14 +270,18 @@ class RolloutStorage:
 
             # These are all tensors of size (T, N, -1)
             for sensor in observations_batch:
-                observations_batch[sensor] = torch.stack(observations_batch[sensor], 1)
+                observations_batch[sensor] = torch.stack(
+                    observations_batch[sensor], 1
+                )
 
             actions_batch = torch.stack(actions_batch, 1)
             prev_actions_batch = torch.stack(prev_actions_batch, 1)
             value_preds_batch = torch.stack(value_preds_batch, 1)
             return_batch = torch.stack(return_batch, 1)
             masks_batch = torch.stack(masks_batch, 1)
-            old_action_log_probs_batch = torch.stack(old_action_log_probs_batch, 1)
+            old_action_log_probs_batch = torch.stack(
+                old_action_log_probs_batch, 1
+            )
             adv_targ = torch.stack(adv_targ, 1)
 
             # States is just a (num_layers, N, -1) tensor
@@ -324,7 +340,8 @@ def ppo_args():
 
     opts = omegaconf.OmegaConf.load(
         osp.join(
-            osp.dirname(nav_analysis.__file__), "configs/experiments/base_conf.yaml"
+            osp.dirname(nav_analysis.__file__),
+            "configs/experiments/base_conf.yaml",
         )
     )
     for conf_name in args.extra_confs if args.extra_confs is not None else []:
