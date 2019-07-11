@@ -23,11 +23,7 @@ from habitat.datasets.pointnav.pointnav_dataset import PointNavDatasetV1
 from habitat.sims.habitat_simulator import SimulatorActions
 from nav_analysis.config.default import cfg as cfg_baseline
 from nav_analysis.rl.ppo import PPO, Policy, RolloutStorage
-from nav_analysis.rl.ppo.utils import (
-    batch_obs,
-    ppo_args,
-    update_linear_schedule,
-)
+from nav_analysis.rl.ppo.utils import batch_obs, ppo_args, update_linear_schedule
 
 CFG_DIR = osp.join(osp.dirname(nav_analysis.__file__), "configs")
 
@@ -57,9 +53,7 @@ class NavRLEnv(habitat.RLEnv):
 
         if self._config_env.VERBOSE is True:
             agent_state = self._env.sim.get_agent_state()
-            logger.info(
-                "CURRENT_EPISODE: {}".format(self._env.current_episode)
-            )
+            logger.info("CURRENT_EPISODE: {}".format(self._env.current_episode))
             logger.info("START_POSITION A: {}".format(agent_state.position))
             logger.info("START_ROTATION A: {}".format(agent_state.rotation))
             logger.info(
@@ -106,9 +100,7 @@ class NavRLEnv(habitat.RLEnv):
     def _distance_target(self):
         current_position = self._env.sim.get_agent_state().position.tolist()
         target_position = self._env.current_episode.goals[0].position
-        distance = self._env.sim.geodesic_distance(
-            current_position, target_position
-        )
+        distance = self._env.sim.geodesic_distance(current_position, target_position)
         return distance
 
     def _episode_success(self):
@@ -153,6 +145,9 @@ class LoopNavRLEnv(NavRLEnv):
         self._episode_stage = None
         self._stages_successful = []
         self._give_return_obs = config_env.TASK.LOOPNAV_GIVE_RETURN_OBS
+        self._sparse_goal_sensor = (
+            config_env.TASK.POINTGOAL_SENSOR.SENSOR_TYPE == "SPARSE"
+        )
         super().__init__(config_env, config_baseline, dataset)
 
     def reset(self):
@@ -171,57 +166,49 @@ class LoopNavRLEnv(NavRLEnv):
             if self._episode_stage == 0:
                 self._current_target = self._env.current_episode.start_position
 
-                if (
-                    self._previous_target_distance
-                    < self._config_env.SUCCESS_DISTANCE
-                ):
+                if self._previous_target_distance < self._config_env.SUCCESS_DISTANCE:
                     # zeroth stage is successful
                     self._stages_successful[0] = True
 
                     if self._config_env.VERBOSE is True:
                         agent_state = self._env.sim.get_agent_state()
                         logger.info(
-                            "STAGE-1 ENDING_POSITION: {}".format(
-                                agent_state.position
-                            )
+                            "STAGE-1 ENDING_POSITION: {}".format(agent_state.position)
                         )
                         logger.info(
-                            "STAGE-1 ENDING_ROTATION: {}".format(
-                                agent_state.rotation
-                            )
+                            "STAGE-1 ENDING_ROTATION: {}".format(agent_state.rotation)
                         )
                 else:
                     curr_episode_over = True
 
                 # swap start position and goal for stage-1
-                self._env.current_episode.start_position, self._env.current_episode.goals[
-                    0
-                ].position = (
-                    self._env.current_episode.goals[0].position,
-                    self._env.current_episode.start_position,
-                )
+                if not self._sparse_goal_sensor:
+                    self._env.current_episode.start_position, self._env.current_episode.goals[
+                        0
+                    ].position = (
+                        self._env.current_episode.goals[0].position,
+                        self._env.current_episode.start_position,
+                    )
+                else:
+                    # If we are doing the static point goal sensor thing, only put the goal at the start!
+                    self._env.current_episode.goals[
+                        0
+                    ].position = self._env.current_episode.start_position
 
                 self._previous_target_distance = self._distance_target()
             else:
                 curr_episode_over = True
 
-                if (
-                    self._previous_target_distance
-                    < self._config_env.SUCCESS_DISTANCE
-                ):
+                if self._previous_target_distance < self._config_env.SUCCESS_DISTANCE:
                     self._stages_successful[1] = True
 
                     if self._config_env.VERBOSE is True:
                         agent_state = self._env.sim.get_agent_state()
                         logger.info(
-                            "STAGE-2 ENDING_POSITION: {}".format(
-                                agent_state.position
-                            )
+                            "STAGE-2 ENDING_POSITION: {}".format(agent_state.position)
                         )
                         logger.info(
-                            "STAGE-2 ENDING_ROTATION: {}".format(
-                                agent_state.rotation
-                            )
+                            "STAGE-2 ENDING_ROTATION: {}".format(agent_state.rotation)
                         )
 
         observations, reward, done, info = super().step(action)
@@ -318,15 +305,11 @@ def make_env_fn(config_env, config_baseline, shuffle_interval, rank):
 
     if config_env.SIMULATOR.AGENT_0.TURNAROUND:
         env = LoopNavRLEnv(
-            config_env=config_env,
-            config_baseline=config_baseline,
-            dataset=dataset,
+            config_env=config_env, config_baseline=config_baseline, dataset=dataset
         )
     else:
         env = NavRLEnv(
-            config_env=config_env,
-            config_baseline=config_baseline,
-            dataset=dataset,
+            config_env=config_env, config_baseline=config_baseline, dataset=dataset
         )
 
     env.seed(rank)
@@ -334,13 +317,11 @@ def make_env_fn(config_env, config_baseline, shuffle_interval, rank):
     return env
 
 
-def construct_envs(args, split="train"):
+def construct_envs(args, split="train", one_scene=False):
     env_configs = []
     baseline_configs = []
 
-    basic_config = cfg_env(
-        config_file=args.task.task_config, config_dir=CFG_DIR
-    )
+    basic_config = cfg_env(config_file=args.task.task_config, config_dir=CFG_DIR)
 
     basic_config.defrost()
     basic_config.DATASET.SPLIT = split
@@ -352,8 +333,7 @@ def construct_envs(args, split="train"):
         random.shuffle(scenes)
 
         assert len(scenes) >= args.ppo.num_processes, (
-            "reduce the number of processes as there "
-            "aren't enough number of scenes"
+            "reduce the number of processes as there " "aren't enough number of scenes"
         )
 
         next_split_id = 0
@@ -361,10 +341,11 @@ def construct_envs(args, split="train"):
             scene_splits[next_split_id].append(s)
             next_split_id = (next_split_id + 1) % len(scene_splits)
 
+            if one_scene and next_split_id == 0:
+                break
+
     for i in range(args.ppo.num_processes):
-        config_env = cfg_env(
-            config_file=args.task.task_config, config_dir=CFG_DIR
-        )
+        config_env = cfg_env(config_file=args.task.task_config, config_dir=CFG_DIR)
         config_env.defrost()
 
         config_env.DATASET.SPLIT = split
@@ -376,18 +357,12 @@ def construct_envs(args, split="train"):
         if len(scenes) > 0:
             config_env.DATASET.POINTNAVV1.CONTENT_SCENES = scene_splits[i]
 
-        config_env.SIMULATOR.HABITAT_SIM_V0.GPU_DEVICE_ID = (
-            args.general.sim_gpu_id
-        )
-        config_env.TASK.POINTGOAL_SENSOR.SENSOR_TYPE = (
-            args.task.pointgoal_sensor_type
-        )
+        config_env.SIMULATOR.HABITAT_SIM_V0.GPU_DEVICE_ID = args.general.sim_gpu_id
+        config_env.TASK.POINTGOAL_SENSOR.SENSOR_TYPE = args.task.pointgoal_sensor_type
         config_env.TASK.POINTGOAL_SENSOR.SENSOR_DIMENSIONS = (
             args.task.pointgoal_sensor_dimensions
         )
-        config_env.TASK.POINTGOAL_SENSOR.GOAL_FORMAT = (
-            args.task.pointgoal_sensor_format
-        )
+        config_env.TASK.POINTGOAL_SENSOR.GOAL_FORMAT = args.task.pointgoal_sensor_format
 
         agent_sensors = args.task.agent_sensors
         for sensor in agent_sensors:
@@ -398,9 +373,7 @@ def construct_envs(args, split="train"):
 
         config_env.SIMULATOR.AGENT_0.SENSORS = list(agent_sensors)
 
-        config_env.SIMULATOR.AGENT_0.TURNAROUND = (
-            args.task.nav_task == "loopnav"
-        )
+        config_env.SIMULATOR.AGENT_0.TURNAROUND = args.task.nav_task == "loopnav"
 
         if args.task.nav_task == "loopnav":
             config_env.TASK.MEASUREMENTS = ["LOOPSPL", "LOOP_D_DELTA"]
@@ -411,13 +384,15 @@ def construct_envs(args, split="train"):
         else:
             config_env.TASK.MEASUREMENTS = ["SPL"]
 
-        #  config_env.TASK.MEASUREMENTS.append("COLLISIONS")
-        #  config_env.TASK.MEASUREMENTS.append("EGO_POSE")
-        #  config_env.TASK.MEASUREMENTS.append("GOAL_POSE")
+        if False:
+            config_env.TASK.MEASUREMENTS = list(
+                set(
+                    config_env.TASK.MEASUREMENTS
+                    + ["EGO_POSE", "GOAL_POSE", "COLLISIONS"]
+                )
+            )
 
-        config_env.ENVIRONMENT.MAX_EPISODE_STEPS = (
-            args.task.max_episode_timesteps
-        )
+        config_env.ENVIRONMENT.MAX_EPISODE_STEPS = args.task.max_episode_timesteps
 
         config_env.freeze()
         env_configs.append(config_env)
@@ -425,7 +400,7 @@ def construct_envs(args, split="train"):
         config_baseline = cfg_baseline(config_dir=CFG_DIR)
         baseline_configs.append(config_baseline)
 
-        logger.info("config_env: {}".format(config_env))
+        #  logger.info("config_env: {}".format(config_env))
 
     envs = habitat.VectorEnv(
         make_env_fn=make_env_fn,
@@ -434,10 +409,7 @@ def construct_envs(args, split="train"):
                 zip(
                     env_configs,
                     baseline_configs,
-                    [
-                        args.task.shuffle_interval
-                        for _ in range(args.ppo.num_processes)
-                    ],
+                    [args.task.shuffle_interval for _ in range(args.ppo.num_processes)],
                     range(args.ppo.num_processes),
                 )
             )
@@ -535,16 +507,12 @@ def main():
     count_checkpoints = 0
 
     logger.info(
-        "start_update: {}, num_updates: {}".format(
-            start_update, args.num_updates
-        )
+        "start_update: {}, num_updates: {}".format(start_update, args.num_updates)
     )
 
     for update in range(start_update, args.num_updates):
         if args.use_linear_lr_decay:
-            update_linear_schedule(
-                agent.optimizer, update, args.num_updates, args.lr
-            )
+            update_linear_schedule(agent.optimizer, update, args.num_updates, args.lr)
 
         agent.clip_param = args.clip_param * (1 - update / args.num_updates)
 
@@ -571,9 +539,7 @@ def main():
             t_step_env = time()
 
             outputs = envs.step([a[0].item() for a in actions])
-            observations, rewards, dones, infos = [
-                list(x) for x in zip(*outputs)
-            ]
+            observations, rewards, dones, infos = [list(x) for x in zip(*outputs)]
 
             env_time += time() - t_step_env
 
@@ -625,18 +591,14 @@ def main():
 
         t_update_model = time()
         with torch.no_grad():
-            last_observation = {
-                k: v[-1] for k, v in rollouts.observations.items()
-            }
+            last_observation = {k: v[-1] for k, v in rollouts.observations.items()}
             next_value = actor_critic.get_value(
                 last_observation,
                 rollouts.recurrent_hidden_states[-1],
                 rollouts.masks[-1],
             ).detach()
 
-        rollouts.compute_returns(
-            next_value, args.use_gae, args.gamma, args.tau
-        )
+        rollouts.compute_returns(next_value, args.use_gae, args.gamma, args.tau)
 
         value_loss, action_loss, dist_entropy = agent.update(rollouts)
 
@@ -666,13 +628,9 @@ def main():
                 window_episode_success[-1] - window_episode_success[0]
             ).sum()
 
-            window_counts = (
-                window_episode_counts[-1] - window_episode_counts[0]
-            ).sum()
+            window_counts = (window_episode_counts[-1] - window_episode_counts[0]).sum()
 
-            window_counts = (
-                window_episode_counts[-1] - window_episode_counts[0]
-            ).sum()
+            window_counts = (window_episode_counts[-1] - window_episode_counts[0]).sum()
 
             if window_counts > 0:
                 logger.info(
@@ -694,9 +652,7 @@ def main():
             window_rewards = (
                 window_episode_reward[-1] - window_episode_reward[0]
             ).sum()
-            window_counts = (
-                window_episode_counts[-1] - window_episode_counts[0]
-            ).sum()
+            window_counts = (window_episode_counts[-1] - window_episode_counts[0]).sum()
             avg_reward = (window_rewards / window_counts).item()
             if np.isnan(avg_reward):
                 avg_reward = 0
@@ -705,9 +661,7 @@ def main():
                 checkpoint,
                 os.path.join(
                     args.checkpoint_folder,
-                    "ckpt.{}.reward.{:.3f}.pth".format(
-                        avg_reward, count_checkpoints
-                    ),
+                    "ckpt.{}.reward.{:.3f}.pth".format(avg_reward, count_checkpoints),
                 ),
             )
 

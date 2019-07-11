@@ -33,33 +33,34 @@ def main():
 
     trained_ckpt = torch.load(args.model_path, map_location=device)
     trained_args = trained_ckpt["args"]
-    trained_args.task_config = "tasks/gibson.pointnav.yaml"
+    trained_args.task.task_config = "tasks/loopnav/gibson-public.loopnav.yaml"
 
-    trained_args.num_processes = args.num_processes
-    trained_args.sim_gpu_ids = args.gpu_id
-    trained_args.pth_gpu_id = args.gpu_id
+    trained_args.ppo.num_processes = args.num_processes
+    trained_args.general.sim_gpu_id = args.gpu_id
 
-    trained_args.nav_task = "pointnav"
+    trained_args.task.nav_task = "pointnav"
 
-    trained_args.nav_env_verbose = False
-    trained_args.video = False
-    trained_args.shuffle_interval = int(1e3)
+    trained_args.general.video = False
+    trained_args.task.shuffle_interval = int(1e3)
 
     for split in ["train", "val"]:
         num_samples = getattr(args, f"num_{split}_samples")
         with construct_envs(trained_args, split) as envs, tqdm.tqdm(
             total=num_samples
         ) as pbar:
+            trained_args.task.nav_task = "loopnav"
             actor_critic = Policy(
                 observation_space=envs.observation_spaces[0],
                 action_space=envs.action_spaces[0],
-                hidden_size=trained_args.hidden_size,
-                num_recurrent_layers=trained_args.num_recurrent_layers,
-                blind=trained_args.blind,
-                use_aux_losses=trained_args.use_aux_losses,
-                rnn_type=trained_args.rnn_type,
-                resnet_baseplanes=trained_args.resnet_baseplanes,
-                backbone=trained_args.backbone,
+                hidden_size=trained_args.model.hidden_size,
+                num_recurrent_layers=trained_args.model.num_recurrent_layers,
+                blind=trained_args.model.blind,
+                use_aux_losses=False,
+                rnn_type=trained_args.model.rnn_type,
+                resnet_baseplanes=trained_args.model.resnet_baseplanes,
+                backbone=trained_args.model.backbone,
+                two_headed=trained_args.model.two_headed,
+                task=trained_args.task.nav_task,
             )
             actor_critic.load_state_dict(
                 {
@@ -72,7 +73,7 @@ def main():
             actor_critic = actor_critic.to(device)
             actor_critic.eval()
 
-            if trained_args.blind:
+            if trained_args.model.blind:
                 assert actor_critic.net.cnn is None
 
             observations = envs.reset()
@@ -83,7 +84,7 @@ def main():
             test_recurrent_hidden_states = torch.zeros(
                 actor_critic.net.num_recurrent_layers,
                 args.num_processes,
-                trained_args.hidden_size,
+                trained_args.model.hidden_size,
                 device=device,
             )
             not_done_masks = torch.zeros(args.num_processes, 1, device=device)
@@ -94,15 +95,13 @@ def main():
             num_samples = int(num_samples)
             collision_labels = np.zeros((num_samples,), dtype=np.int64)
             positions = np.zeros((num_samples, 2), dtype=np.float32)
-            goal_centric_positions = np.zeros(
-                (num_samples, 2), dtype=np.float32
-            )
+            goal_centric_positions = np.zeros((num_samples, 2), dtype=np.float32)
             goal_vectors = np.zeros((num_samples, 3), dtype=np.float32)
             hidden_states = np.zeros(
                 (
                     num_samples,
                     actor_critic.net.num_recurrent_layers
-                    * trained_args.hidden_size,
+                    * trained_args.model.hidden_size,
                 ),
                 dtype=np.float32,
             )
@@ -137,28 +136,19 @@ def main():
                     )
                     positions[next_idx] = infos[i]["ego_pose"]
                     goal_centric_positions[next_idx] = infos[i]["goal_pose"]
-                    goal_vectors[next_idx] = (
-                        batch["pointgoal"][i].cpu().numpy()
-                    )
+                    goal_vectors[next_idx] = batch["pointgoal"][i].cpu().numpy()
                     hidden_states[next_idx] = (
-                        test_recurrent_hidden_states[:, i]
-                        .cpu()
-                        .view(-1)
-                        .numpy()
+                        test_recurrent_hidden_states[:, i].cpu().view(-1).numpy()
                     )
                     num_collisions += collision_labels[next_idx]
                     next_idx += 1
 
                     pbar.update()
-                    pbar.set_postfix(
-                        pc="{:.3f}".format(num_collisions / next_idx)
-                    )
+                    pbar.set_postfix(pc="{:.3f}".format(num_collisions / next_idx))
 
                 outputs = envs.step([a[0].item() for a in actions])
 
-                observations, rewards, dones, infos = [
-                    list(x) for x in zip(*outputs)
-                ]
+                observations, rewards, dones, infos = [list(x) for x in zip(*outputs)]
                 batch = batch_obs(observations)
                 for sensor in batch:
                     batch[sensor] = batch[sensor].to(device)
@@ -174,9 +164,7 @@ def main():
             f.create_dataset("positions", data=positions)
             f.create_dataset("hidden_states", data=hidden_states)
             f.create_dataset("goal_vectors", data=goal_vectors)
-            f.create_dataset(
-                "goal_centric_positions", data=goal_centric_positions
-            )
+            f.create_dataset("goal_centric_positions", data=goal_centric_positions)
 
 
 if __name__ == "__main__":

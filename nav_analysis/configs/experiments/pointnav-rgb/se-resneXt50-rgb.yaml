@@ -1,0 +1,7 @@
+model:
+    backbone: se_resneXt50
+    norm_visual_inputs: True
+
+task:
+    agent_sensors:
+        - RGB_SENSOR

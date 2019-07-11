@@ -41,6 +41,9 @@ ppo:
     num_mini_batch: 2
     num_updates: 150000
 
+ddppo:
+    sync_frac: 0.8
+
 
 logging:
     log_file: ???

@@ -1,5 +1,5 @@
 model:
-    num_recurrent_layers: 2
+    num_recurrent_layers: 3
     blind: True
 
 ppo:

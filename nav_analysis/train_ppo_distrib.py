@@ -20,11 +20,7 @@ from torch.utils import tensorboard
 
 from habitat import logger
 from nav_analysis.rl.ppo import PPO, Policy, RolloutStorage
-from nav_analysis.rl.ppo.utils import (
-    batch_obs,
-    ppo_args,
-    update_linear_schedule,
-)
+from nav_analysis.rl.ppo.utils import batch_obs, ppo_args, update_linear_schedule
 from nav_analysis.train_ppo import construct_envs
 
 torch.backends.cudnn.enabled = True
@@ -78,35 +74,33 @@ def before_exit():
         os.system("scontrol requeue " + os.environ["SLURM_JOB_ID"])
 
 
-def setup_distrib_env():
-    if "MASTER_PORT" not in os.environ:
-        os.environ["MASTER_PORT"] = "1234"
+def init_distrib():
+    master_port = int(os.environ.get("MASTER_PORT", 1234))
+    master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
+    local_rank = int(os.environ.get("LOCAL_RANK", os.environ.get("SLURM_LOCALID")))
+    world_rank = int(os.environ.get("RANK", os.environ.get("SLURM_PROCID")))
+    world_size = int(os.environ.get("WORLD_SIZE", os.environ.get("SLURM_NTASKS")))
 
-    if "MASTER_ADDR" not in os.environ:
-        os.environ["MASTER_ADDR"] = "127.0.0.1"
+    torch.cuda.set_device(torch.device("cuda", local_rank))
 
-    if "LOCAL_RANK" not in os.environ:
-        os.environ["LOCAL_RANK"] = os.environ.get("SLURM_LOCALID", "0")
+    tcp_store = dist.TCPStore(master_addr, master_port, world_size, world_rank == 0)
+    dist.init_process_group(
+        dist.Backend.NCCL, store=tcp_store, rank=world_rank, world_size=world_size
+    )
 
-    if "RANK" not in os.environ:
-        os.environ["RANK"] = os.environ.get("SLURM_PROCID", "0")
-
-    if "WORLD_SIZE" not in os.environ:
-        os.environ["WORLD_SIZE"] = os.environ.get("SLURM_NTASKS", "1")
+    return local_rank, tcp_store
 
 
 def main():
     global WORLD_RANK
     args = ppo_args()
 
-    setup_distrib_env()
+    local_rank, tcp_store = init_distrib()
 
-    args.general.local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    args.general.local_rank = local_rank
     args.general.sim_gpu_id = args.general.local_rank
     device = torch.device("cuda", args.general.local_rank)
     torch.cuda.set_device(device)
-
-    dist.init_process_group(dist.Backend.NCCL)
 
     world_size = dist.get_world_size()
     world_rank = dist.get_rank()
@@ -115,6 +109,10 @@ def main():
     torch.manual_seed(args.general.seed + world_rank)
     torch.cuda.manual_seed_all(args.general.seed + world_rank)
     np.random.seed(args.general.seed + world_rank)
+
+    is_done_store = dist.PrefixStore("rollout_tracker", tcp_store)
+    if WORLD_RANK == 0:
+        is_done_store.set(f"num_done", "0")
 
     checkpoint_folder = args.logging.checkpoint_folder
     if WORLD_RANK == 0 and not os.path.isdir(args.logging.checkpoint_folder):
@@ -141,7 +139,8 @@ def main():
             backbone=args.model.backbone,
             task=args.task.nav_task,
             norm_visual_inputs=args.model.norm_visual_inputs,
-            two_headed=args.model.two_headed,
+            #  two_headed=args.model.two_headed,
+            two_headed=False,
         )
         actor_critic.to(device)
 
@@ -161,7 +160,7 @@ def main():
         env_time = 0
         pth_time = 0
         sync_time = 0
-        count_steps = 0
+        count_steps = torch.tensor(0, device=device, dtype=torch.int64)
         count_checkpoints = 0
         update_start_from = 0
         prev_time = 0
@@ -236,17 +235,11 @@ def main():
         window_episode_reward = deque(maxlen=args.logging.reward_window_size)
         window_episode_counts = deque(maxlen=args.logging.reward_window_size)
         window_episode_spl = deque(maxlen=args.logging.reward_window_size)
-        window_episode_successes = deque(
-            maxlen=args.logging.reward_window_size
-        )
+        window_episode_successes = deque(maxlen=args.logging.reward_window_size)
 
         if args.task.nav_task == "loopnav":
-            window_episode_stage_1_spl = deque(
-                maxlen=args.logging.reward_window_size
-            )
-            window_episode_stage_2_spl = deque(
-                maxlen=args.logging.reward_window_size
-            )
+            window_episode_stage_1_spl = deque(maxlen=args.logging.reward_window_size)
+            window_episode_stage_2_spl = deque(maxlen=args.logging.reward_window_size)
             window_episode_stage_1_d_delta = deque(
                 maxlen=args.logging.reward_window_size
             )
@@ -258,9 +251,7 @@ def main():
 
         tb_enabled = WORLD_RANK == 0
         if tb_enabled:
-            writer_kwargs = dict(
-                log_dir=tensorboard_dir, purge_step=count_steps
-            )
+            writer_kwargs = dict(log_dir=tensorboard_dir, purge_step=count_steps.item())
 
         with (
             tensorboard.SummaryWriter(**writer_kwargs)
@@ -268,12 +259,10 @@ def main():
             else contextlib.suppress()
         ) as writer:
             for update in range(update_start_from, args.ppo.num_updates):
+
                 if args.ppo.linear_lr_decay:
                     update_linear_schedule(
-                        agent.optimizer,
-                        update,
-                        args.ppo.num_updates,
-                        args.optimizer.lr,
+                        agent.optimizer, update, args.ppo.num_updates, args.optimizer.lr
                     )
 
                 if args.ppo.linear_clip_decay:
@@ -283,13 +272,11 @@ def main():
 
                 actor_critic.eval()
                 for step in range(args.ppo.num_steps):
-                    count_steps += envs.num_envs * world_size
                     t_sample_action = time()
                     # sample actions
                     with torch.no_grad():
                         step_observation = {
-                            k: v[step]
-                            for k, v in rollouts.observations.items()
+                            k: v[step] for k, v in rollouts.observations.items()
                         }
 
                         (
@@ -317,9 +304,7 @@ def main():
 
                     t_update_stats = time()
                     batch = batch_obs(observations)
-                    rewards = torch.tensor(
-                        rewards, dtype=torch.float, device=device
-                    )
+                    rewards = torch.tensor(rewards, dtype=torch.float, device=device)
                     rewards = rewards.unsqueeze(1)
 
                     masks = torch.tensor(
@@ -374,9 +359,7 @@ def main():
 
                         episode_stage_1_spls += torch.tensor(
                             [
-                                [info[key_spl]["stage_1_spl"]]
-                                if done
-                                else [0.0]
+                                [info[key_spl]["stage_1_spl"]] if done else [0.0]
                                 for info, done in zip(infos, dones)
                             ],
                             dtype=torch.float,
@@ -384,9 +367,7 @@ def main():
                         )
                         episode_stage_2_spls += torch.tensor(
                             [
-                                [info[key_spl]["stage_2_spl"]]
-                                if done
-                                else [0.0]
+                                [info[key_spl]["stage_2_spl"]] if done else [0.0]
                                 for info, done in zip(infos, dones)
                             ],
                             dtype=torch.float,
@@ -395,9 +376,7 @@ def main():
 
                         episode_stage_1_d_deltas += torch.tensor(
                             [
-                                [info["loop_d_delta"]["stage_1"]]
-                                if done
-                                else [0.0]
+                                [info["loop_d_delta"]["stage_1"]] if done else [0.0]
                                 for info, done in zip(infos, dones)
                             ],
                             dtype=torch.float,
@@ -406,9 +385,7 @@ def main():
 
                         episode_stage_2_d_deltas += torch.tensor(
                             [
-                                [info["loop_d_delta"]["stage_2"]]
-                                if done
-                                else [0.0]
+                                [info["loop_d_delta"]["stage_2"]] if done else [0.0]
                                 for info, done in zip(infos, dones)
                             ],
                             dtype=torch.float,
@@ -428,24 +405,35 @@ def main():
 
                     pth_time += time() - t_update_stats
 
+                    if (step + 1) >= (args.ppo.num_steps / 4) and int(
+                        is_done_store.get("num_done")
+                    ) >= (world_size * args.ddppo.sync_frac):
+                        break
+
+                is_done_store.add("num_done", 1)
+
                 t_sync = time()
                 dist.barrier()
                 t_sync = torch.tensor(
                     time() - t_sync, device=device, dtype=torch.float32
                 )
-                dist.all_reduce(t_sync, op=dist.ReduceOp.MAX)
-                sync_time += t_sync.item()
+                dist.all_reduce(t_sync)
+                sync_time += t_sync.item() / world_size
+
+                step_delta = torch.full_like(count_steps, rollouts.step * envs.num_envs)
+                dist.all_reduce(step_delta)
+                count_steps += step_delta
 
                 t_update_model = time()
                 with torch.no_grad():
                     last_observation = {
-                        k: v[-1] for k, v in rollouts.observations.items()
+                        k: v[rollouts.step] for k, v in rollouts.observations.items()
                     }
                     next_value = actor_critic.get_value(
                         last_observation,
-                        rollouts.recurrent_hidden_states[-1],
-                        rollouts.prev_actions[-1],
-                        rollouts.masks[-1],
+                        rollouts.recurrent_hidden_states[rollouts.step],
+                        rollouts.prev_actions[rollouts.step],
+                        rollouts.masks[rollouts.step],
                     ).detach()
 
                 rollouts.compute_returns(
@@ -465,6 +453,10 @@ def main():
 
                 rollouts.after_update()
                 pth_time += time() - t_update_model
+
+                torch.cuda.synchronize()
+                if WORLD_RANK == 0:
+                    is_done_store.set("num_done", "0")
 
                 if args.task.nav_task == "pointnav":
                     stats = torch.cat(
@@ -552,9 +544,7 @@ def main():
                     deltas["count"] = max(deltas["count"], 1.0)
 
                     writer.add_scalar(
-                        "reward",
-                        deltas["reward"] / deltas["count"],
-                        count_steps,
+                        "reward", deltas["reward"] / deltas["count"], count_steps
                     )
 
                     writer.add_scalars(
@@ -562,9 +552,7 @@ def main():
                         {
                             k: l.item() * s
                             for l, k, s in zip(
-                                losses,
-                                ["value", "policy", "entropy"],
-                                [1, 1, 0.1],
+                                losses, ["value", "policy", "entropy"], [1, 1, 0.1]
                             )
                         },
                         count_steps,
@@ -620,9 +608,7 @@ def main():
 
                 if INTERRUPTED.is_set():
                     if world_rank == 0:
-                        logger.info(
-                            "Interrupted, REQUEUE: {}".format(REQUEUE.is_set())
-                        )
+                        logger.info("Interrupted, REQUEUE: {}".format(REQUEUE.is_set()))
                     if world_rank == 0 and REQUEUE.is_set():
                         logger.info("Saving state for requeue")
                         _save_state()
@@ -630,18 +616,14 @@ def main():
                     return
 
                 if world_rank == 0:
-                    if (
-                        update > 0
-                        and update % args.logging.save_state_interval == 0
-                    ):
+                    if update > 0 and update % args.logging.save_state_interval == 0:
                         _save_state()
 
                     # log stats
                     if update > 0 and update % args.logging.log_interval == 0:
                         logger.info(
                             "update: {}\tfps: {:.3f}".format(
-                                update,
-                                count_steps / ((time() - t_start) + prev_time),
+                                update, count_steps / ((time() - t_start) + prev_time)
                             )
                         )
 
@@ -654,24 +636,21 @@ def main():
                                 sync_time,
                                 sync_time
                                 / max((env_time + pth_time + sync_time), 1e-8),
-                                count_steps,
+                                count_steps.item(),
                             )
                         )
 
                         window_rewards = (
-                            window_episode_reward[-1]
-                            - window_episode_reward[0]
+                            window_episode_reward[-1] - window_episode_reward[0]
                         ).sum()
                         window_spl = (
                             window_episode_spl[-1] - window_episode_spl[0]
                         ).sum()
                         window_successes = (
-                            window_episode_successes[-1]
-                            - window_episode_successes[0]
+                            window_episode_successes[-1] - window_episode_successes[0]
                         ).sum()
                         window_counts = (
-                            window_episode_counts[-1]
-                            - window_episode_counts[0]
+                            window_episode_counts[-1] - window_episode_counts[0]
                         ).sum()
 
                         if args.task.nav_task == "loopnav":
@@ -700,14 +679,10 @@ def main():
                                     "Average window size {} reward: {:.3f}\t"
                                     "{}: {:.3f}\t success: {:.3f}".format(
                                         len(window_episode_reward),
-                                        (
-                                            window_rewards / window_counts
-                                        ).item(),
+                                        (window_rewards / window_counts).item(),
                                         key_spl,
                                         (window_spl / window_counts).item(),
-                                        (
-                                            window_successes / window_counts
-                                        ).item(),
+                                        (window_successes / window_counts).item(),
                                     )
                                 )
                             else:
@@ -720,27 +695,13 @@ def main():
                                     "loop-spl: {:.3f}\t"
                                     "success: {:.3f}".format(
                                         len(window_episode_reward),
-                                        (
-                                            window_rewards / window_counts
-                                        ).item(),
-                                        (
-                                            window_stage_1_spl / window_counts
-                                        ).item(),
-                                        (
-                                            window_stage_2_spl / window_counts
-                                        ).item(),
-                                        (
-                                            window_stage_1_d_delta
-                                            / window_counts
-                                        ).item(),
-                                        (
-                                            window_stage_2_d_delta
-                                            / window_counts
-                                        ).item(),
+                                        (window_rewards / window_counts).item(),
+                                        (window_stage_1_spl / window_counts).item(),
+                                        (window_stage_2_spl / window_counts).item(),
+                                        (window_stage_1_d_delta / window_counts).item(),
+                                        (window_stage_2_d_delta / window_counts).item(),
                                         (window_spl / window_counts).item(),
-                                        (
-                                            window_successes / window_counts
-                                        ).item(),
+                                        (window_successes / window_counts).item(),
                                     )
                                 )
                         else:

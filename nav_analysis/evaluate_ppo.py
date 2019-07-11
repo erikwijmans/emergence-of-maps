@@ -54,15 +54,11 @@ def val_env_fn(config_env, config_baseline, rank):
 
     if config_env.SIMULATOR.AGENT_0.TURNAROUND:
         env = LoopNavRLEnv(
-            config_env=config_env,
-            config_baseline=config_baseline,
-            dataset=dataset,
+            config_env=config_env, config_baseline=config_baseline, dataset=dataset
         )
     else:
         env = NavRLEnv(
-            config_env=config_env,
-            config_baseline=config_baseline,
-            dataset=dataset,
+            config_env=config_env, config_baseline=config_baseline, dataset=dataset
         )
 
     env.seed(rank)
@@ -76,9 +72,7 @@ def images_to_video(images, output_dir, video_name):
     for im in tqdm.tqdm(images):
         writer.append_data(im)
     writer.close()
-    logger.info(
-        "Generated video: {}".format(os.path.join(output_dir, video_name))
-    )
+    logger.info("Generated video: {}".format(os.path.join(output_dir, video_name)))
 
 
 def poll_checkpoint_folder(checkpoint_folder, previous_ckpt_ind):
@@ -98,81 +92,72 @@ def construct_val_envs(args):
     env_configs = []
     baseline_configs = []
 
-    basic_config = get_config(config_file=args.task_config, config_dir=CFG_DIR)
+    basic_config = get_config(config_file=args.task.task_config, config_dir=CFG_DIR)
     basic_config.defrost()
     basic_config.DATASET.SPLIT = "val"
     basic_config.freeze()
 
     scenes = PointNavDatasetV1.get_scenes_to_load(basic_config.DATASET)
 
-    assert len(scenes) >= args.num_processes, (
-        "reduce the number of processes as there "
-        "aren't enough number of scenes"
+    assert len(scenes) >= args.ppo.num_processes, (
+        "reduce the number of processes as there " "aren't enough number of scenes"
     )
-    scene_splits = [[] for _ in range(args.num_processes)]
+    scene_splits = [[] for _ in range(args.ppo.num_processes)]
     next_split_id = 0
     for s in scenes:
         scene_splits[next_split_id].append(s)
         next_split_id = (next_split_id + 1) % len(scene_splits)
 
     assert sum(map(len, scene_splits)) == len(scenes)
-    sim_gpus = [int(x) for x in args.sim_gpu_ids.strip().split(",")]
+    sim_gpus = [args.general.sim_gpu_id]
 
-    for i in range(args.num_processes):
-        config_env = get_config(
-            config_file=args.task_config, config_dir=CFG_DIR
-        )
+    for i in range(args.ppo.num_processes):
+        config_env = get_config(config_file=args.task.task_config, config_dir=CFG_DIR)
         config_env.defrost()
 
         config_env.DATASET.SPLIT = "val"
         config_env.DATASET.POINTNAVV1.CONTENT_SCENES = scene_splits[i]
 
-        config_env.SIMULATOR.HABITAT_SIM_V0.GPU_DEVICE_ID = sim_gpus[
-            i % len(sim_gpus)
-        ]
-        config_env.TASK.POINTGOAL_SENSOR.SENSOR_TYPE = (
-            args.pointgoal_sensor_type
-        )
+        config_env.SIMULATOR.HABITAT_SIM_V0.GPU_DEVICE_ID = sim_gpus[i % len(sim_gpus)]
+        config_env.TASK.POINTGOAL_SENSOR.SENSOR_TYPE = args.task.pointgoal_sensor_type
         config_env.TASK.POINTGOAL_SENSOR.SENSOR_DIMENSIONS = (
-            args.pointgoal_sensor_dimensions
+            args.task.pointgoal_sensor_dimensions
         )
-        config_env.TASK.POINTGOAL_SENSOR.GOAL_FORMAT = (
-            args.pointgoal_sensor_format
-        )
+        config_env.TASK.POINTGOAL_SENSOR.GOAL_FORMAT = args.task.pointgoal_sensor_format
         config_env.DATASET.TYPE = "PointNav-v1"
 
-        agent_sensors = [
-            s for s in args.sensors.strip().split(",") if len(s) > 0
-        ]
+        agent_sensors = list(args.task.agent_sensors)
+
+        if args.model.blind:
+            agent_sensors = []
 
         if args.video == 1 and "RGB_SENSOR" not in agent_sensors:
             agent_sensors.append("RGB_SENSOR")
 
         for sensor in agent_sensors:
             assert sensor in ["RGB_SENSOR", "DEPTH_SENSOR"]
-        if args.blind:
-            agent_sensors = []
 
         config_env.SIMULATOR.AGENT_0.SENSORS = agent_sensors
 
-        if args.blind and args.video == 0:
+        if args.model.blind and args.general.video:
             config_env.SIMULATOR.DEPTH_SENSOR.WIDTH = 2
             config_env.SIMULATOR.DEPTH_SENSOR.HEIGHT = 2
 
             config_env.SIMULATOR.RGB_SENSOR.HEIGHT = 2
             config_env.SIMULATOR.RGB_SENSOR.WIDTH = 2
 
-        config_env.SIMULATOR.AGENT_0.TURNAROUND = args.nav_task == "loopnav"
+        config_env.SIMULATOR.AGENT_0.TURNAROUND = args.task.nav_task == "loopnav"
 
-        if args.nav_task == "loopnav":
+        if args.task.nav_task == "loopnav":
             config_env.TASK.MEASUREMENTS = ["LOOPSPL", "LOOP_D_DELTA"]
             config_env.TASK.LOOPSPL.BREAKDOWN_METRIC = True
-            config_env.TASK.LOOPNAV_GIVE_RETURN_OBS = False
-            config_env.TASK.SENSORS += ["EPO_GPS_AND_COMPASS", "EPISODE_STAGE"]
+            config_env.TASK.LOOPNAV_GIVE_RETURN_OBS = (
+                args.task.loopnav_give_return_inputs
+            )
         else:
             config_env.TASK.MEASUREMENTS = ["SPL"]
 
-        if args.video == 1:
+        if args.general.video:
             config_env.TASK.MEASUREMENTS.append("TOP_DOWN_MAP")
             config_env.TASK.MEASUREMENTS.append("COLLISIONS")
             config_env.SIMULATOR.RGB_SENSOR.WIDTH = 1024
@@ -182,9 +167,9 @@ def construct_val_envs(args):
                 config_env.SIMULATOR.DEPTH_SENSOR.WIDTH = 1024
                 config_env.SIMULATOR.DEPTH_SENSOR.HEIGHT = 1024
 
-        config_env.ENVIRONMENT.MAX_EPISODE_STEPS = args.max_episode_timesteps
+        config_env.ENVIRONMENT.MAX_EPISODE_STEPS = args.task.max_episode_timesteps
 
-        config_env.TASK.VERBOSE = bool(args.nav_env_verbose)
+        config_env.TASK.VERBOSE = args.task.nav_env_verbose
 
         config_env.freeze()
         env_configs.append(config_env)
@@ -197,13 +182,11 @@ def construct_val_envs(args):
     envs = habitat.VectorEnv(
         make_env_fn=val_env_fn,
         env_fn_args=tuple(
-            tuple(
-                zip(env_configs, baseline_configs, range(args.num_processes))
-            )
+            tuple(zip(env_configs, baseline_configs, range(args.ppo.num_processes)))
         ),
     )
 
-    if args.video == 1 and args.sensors == "DEPTH_SENSOR":
+    if args.general.video and args.task.agent_sensors == ["DEPTH_SENSOR"]:
         del envs.observation_spaces[0].spaces["rgb"]
         envs.observation_spaces[0].spaces["depth"].shape = (256, 256, 1)
 
@@ -227,6 +210,7 @@ def main():
     parser.add_argument("--tensorboard-dir", type=str, required=True)
     parser.add_argument("--nav-env-verbose", type=int, required=True)
     parser.add_argument("--max-memory-length", type=int, default=None)
+    parser.add_argument("--eval-task-config", type=str, required=True)
 
     args = parser.parse_args()
 
@@ -266,38 +250,35 @@ def main():
 
             trained_ckpt = torch.load(current_ckpt, map_location=device)
             trained_args = trained_ckpt["args"]
-            trained_args.task_config = "tasks/gibson.pointnav.yaml"
+            trained_args.task.task_config = args.eval_task_config
+            trained_args.general.sim_gpu_id = int(args.sim_gpu_ids)
+            trained_args.general.video = bool(args.video)
+            trained_args.task.nav_env_verbose = bool(args.nav_env_verbose)
 
-            trained_args.num_processes = args.num_processes
-            trained_args.sim_gpu_ids = args.sim_gpu_ids
-            trained_args.pth_gpu_id = args.pth_gpu_id
+            trained_args.ppo.num_processes = args.num_processes
 
-            trained_args.nav_task = args.nav_task
+            trained_args.task.nav_task = args.nav_task
 
-            if trained_args.nav_task == "pointnav":
+            if trained_args.task.nav_task == "pointnav":
                 key_spl = "spl"
             else:
                 key_spl = "loop_spl"
-
-            trained_args.nav_env_verbose = args.nav_env_verbose
-            trained_args.video = args.video
 
             envs = construct_val_envs(trained_args)
 
             actor_critic = Policy(
                 observation_space=envs.observation_spaces[0],
                 action_space=envs.action_spaces[0],
-                hidden_size=trained_args.hidden_size,
-                num_recurrent_layers=trained_args.num_recurrent_layers,
-                blind=trained_args.blind,
-                use_aux_losses=trained_args.use_aux_losses,
-                rnn_type=trained_args.rnn_type,
-                resnet_baseplanes=trained_args.resnet_baseplanes,
-                backbone=trained_args.backbone,
-                task=trained_args.nav_task,
-                norm_visual_inputs=getattr(
-                    trained_args, "norm_visual_inputs", False
-                ),
+                hidden_size=trained_args.model.hidden_size,
+                num_recurrent_layers=trained_args.model.num_recurrent_layers,
+                blind=trained_args.model.blind,
+                use_aux_losses=False,
+                rnn_type=trained_args.model.rnn_type,
+                resnet_baseplanes=trained_args.model.resnet_baseplanes,
+                backbone=trained_args.model.backbone,
+                task=trained_args.task.nav_task,
+                norm_visual_inputs=trained_args.model.norm_visual_inputs,
+                two_headed=trained_args.model.two_headed
             )
             actor_critic.load_state_dict(
                 {
@@ -323,14 +304,12 @@ def main():
             for sensor in batch:
                 batch[sensor] = batch[sensor].to(device)
 
-            current_episode_reward = torch.zeros(
-                envs.num_envs, 1, device=device
-            )
+            current_episode_reward = torch.zeros(envs.num_envs, 1, device=device)
 
             test_recurrent_hidden_states = torch.zeros(
                 actor_critic.net.num_recurrent_layers,
-                args.num_processes,
-                trained_args.hidden_size,
+                trained_args.ppo.num_processes,
+                trained_args.model.hidden_size,
                 device=device,
             )
             not_done_masks = torch.zeros(args.num_processes, 1, device=device)
@@ -406,15 +385,13 @@ def main():
                                 for k in infos[i][key_spl]:
                                     res[k] = infos[i][key_spl][k]
 
-                                res["success"] = int(
-                                    infos[i][key_spl]["total_spl"] > 0
-                                )
-                                res["stage_1_d_delta"] = infos[i][
-                                    "loop_d_delta"
-                                ]["stage_1"]
-                                res["stage_2_d_delta"] = infos[i][
-                                    "loop_d_delta"
-                                ]["stage_2"]
+                                res["success"] = int(infos[i][key_spl]["total_spl"] > 0)
+                                res["stage_1_d_delta"] = infos[i]["loop_d_delta"][
+                                    "stage_1"
+                                ]
+                                res["stage_2_d_delta"] = infos[i]["loop_d_delta"][
+                                    "stage_2"
+                                ]
 
                                 logger.info(
                                     "EP {}, S1 SPL: {:.3f}, "
@@ -428,18 +405,12 @@ def main():
                                 )
 
                                 logger.info(
-                                    "Num parallel envs: {}".format(
-                                        envs.num_envs
-                                    )
+                                    "Num parallel envs: {}".format(envs.num_envs)
                                 )
 
-                                stats_episodes[
-                                    current_episodes[i].episode_id
-                                ] = res
+                                stats_episodes[current_episodes[i].episode_id] = res
                             else:
-                                stats_episodes[
-                                    current_episodes[i].episode_id
-                                ] = {
+                                stats_episodes[current_episodes[i].episode_id] = {
                                     key_spl: infos[i][key_spl],
                                     "success": (infos[i][key_spl] > 0),
                                 }
@@ -469,26 +440,20 @@ def main():
                                     )
 
                                 images_to_video(
-                                    rgb_frames[i],
-                                    args.out_dir_video,
-                                    video_name,
+                                    rgb_frames[i], args.out_dir_video, video_name
                                 )
                                 rgb_frames[i] = []
 
                         elif args.video == 1:
                             # episode continuing, record frames
                             size = observations[i]["rgb"].shape[0]
-                            frame = np.empty(
-                                (size, 2 * size, 3), dtype=np.uint8
-                            )
+                            frame = np.empty((size, 2 * size, 3), dtype=np.uint8)
                             frame[:, :size] = observations[i]["rgb"][:, :, :3]
 
                             if infos[i]["collisions"]["is_collision"]:
                                 frame[:, 1024:] = [0, 0, 0]
 
-                                mask = np.ones(
-                                    (frame.shape[0], frame.shape[1])
-                                )
+                                mask = np.ones((frame.shape[0], frame.shape[1]))
                                 mask[30:-30, 30 : 1024 - 30] = 0
                                 mask = mask == 1
                                 alpha = 0.5
@@ -507,16 +472,13 @@ def main():
                                 round(scale * top_down_map.shape[1]),
                             )
 
-                            map_agent_pos = infos[i]["top_down_map"][
-                                "map_agent_pos"
-                            ]
+                            map_agent_pos = infos[i]["top_down_map"]["map_agent_pos"]
                             map_agent_pos[0] = int(map_agent_pos[0] * scale_x)
                             map_agent_pos[1] = int(map_agent_pos[1] * scale_y)
                             top_down_map = maps.draw_agent(
                                 top_down_map,
                                 map_agent_pos,
-                                -infos[i]["top_down_map"]["agent_angle"]
-                                + np.pi / 2,
+                                -infos[i]["top_down_map"]["agent_angle"] + np.pi / 2,
                                 agent_radius_px=7 * 4,
                             )
                             if top_down_map.shape[0] > top_down_map.shape[1]:
@@ -537,19 +499,15 @@ def main():
                             py_()
                             .values()
                             .map(k)
-                            .thru(
-                                lambda lst: np.array(
-                                    lst, dtype=np.float32
-                                ).mean()
-                            )(stats_episodes)
+                            .thru(lambda lst: np.array(lst, dtype=np.float32).mean())(
+                                stats_episodes
+                            )
                             if len(stats_episodes) > 0
                             else 0.0
                         )
 
                     if key_spl != "loop_spl":
-                        pbar.set_postfix(
-                            spl=_avg("spl"), success=_avg("success")
-                        )
+                        pbar.set_postfix(spl=_avg("spl"), success=_avg("success"))
                     else:
 
                         pbar.set_postfix(
@@ -574,9 +532,7 @@ def main():
                         ]
                         prev_actions = prev_actions[state_index]
                         not_done_masks = not_done_masks[state_index]
-                        current_episode_reward = current_episode_reward[
-                            state_index
-                        ]
+                        current_episode_reward = current_episode_reward[state_index]
 
                         for k, v in batch.items():
                             batch[k] = v[state_index]
@@ -586,9 +542,7 @@ def main():
 
             logger.info("Checkpoint {} results:".format(current_ckpt))
 
-            total_success = (
-                py_().values().map("success").map(int).sum()(stats_episodes)
-            )
+            total_success = py_().values().map("success").map(int).sum()(stats_episodes)
 
             logger.info(
                 "Average episode success: {:.6f}".format(
@@ -608,14 +562,10 @@ def main():
                 avg_stage_2_spl = total_stage_2_spl / len(stats_episodes)
 
                 logger.info(
-                    "Average episode stage-1 SPL: {:.6f}".format(
-                        avg_stage_1_spl
-                    )
+                    "Average episode stage-1 SPL: {:.6f}".format(avg_stage_1_spl)
                 )
                 logger.info(
-                    "Average episode stage-2 SPL: {:.6f}".format(
-                        avg_stage_2_spl
-                    )
+                    "Average episode stage-2 SPL: {:.6f}".format(avg_stage_2_spl)
                 )
 
                 tb_writer.add_scalars(
@@ -634,10 +584,7 @@ def main():
 
                 tb_writer.add_scalars(
                     "val",
-                    {
-                        "SPL": avg_spl,
-                        "Success": total_success / len(stats_episodes),
-                    },
+                    {"SPL": avg_spl, "Success": total_success / len(stats_episodes)},
                     prev_ckpt_ind,
                 )
 

@@ -1,113 +1,134 @@
+import logging
+import atexit
 import collections
 import json
 import random
+import socket
+import sys
 import shlex
 import subprocess
+import copy
+import os
+import numpy as np
+from pydash import py_
+from habitat import logger
+from nav_analysis.rl.ppo.utils import batch_obs, ppo_args, update_linear_schedule
+from nav_analysis.benchmark_distrib_work import main as work_main
+import threading
+import os.path as osp
+import signal
 
 import tqdm
+import torch
+import torch.distributed as dist
 
-template = r"""
-echo "Using setup for Erik"
-. /private/home/erikwijmans/miniconda3/etc/profile.d/conda.sh
-conda deactivate
-conda activate nav-analysis-base
+logger.handlers[-1].setLevel(level=logging.WARNING)
 
+INTERRUPTED = threading.Event()
+INTERRUPTED.clear()
 
-SENSORS="DEPTH_SENSOR"
-PG_SENSOR_TYPE="DENSE"
-PG_SENSOR_DIMENSIONS=2
-PG_FORMAT="POLAR"
-RNN_TYPE="LSTM"
-NAV_TASK="pointnav"
-MAX_EPISODE_TIMESTEPS=500
-CHECKPOINT=tmp
-
-BLIND=0
-NUM_STEPS=128
-
-module purge
-module load cuda/10.0
-module load cudnn/v7.4-cuda.10.0
-module load NCCL/2.4.2-1-cuda.10.0
-
-export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu/nvidia-opengl:${{LD_LIBRARY_PATH}}
-export GLOG_minloglevel=2
-export MAGNUM_LOG=quiet
-
-export MASTER_ADDR=$(srun --ntasks=1 hostname 2>&1 | tail -n1)
-set -x
-srun --ntasks={NTASKS} --nodes={NNODES} python -u -m nav_analysis.benchmark_distrib_work \
-    --shuffle-interval 50000 \
-    --use-gae \
-    --sim-gpu-id 0 \
-    --pth-gpu-id 0 \
-    --lr 2.5e-4 \
-    --clip-param 0.1 \
-    --value-loss-coef 0.5 \
-    --num-processes 4 \
-    --num-steps ${{NUM_STEPS}} \
-    --num-mini-batch 2 \
-    --ppo-epoch 2 \
-    --num-updates 50 \
-    --entropy-coef 0.01 \
-    --log-file "${{EXP_DIR}}/train.log" \
-    --log-interval 25 \
-    --checkpoint-folder ${{CHECKPOINT}} \
-    --checkpoint-interval 200 \
-    --task-config {TASK} \
-    --sensors ${{SENSORS}} \
-    --num-recurrent-layers 2 \
-    --hidden-size 512 \
-    --rnn-type "${{RNN_TYPE}}" \
-    --reward-window-size 200 \
-    --blind "${{BLIND}}" \
-    --pointgoal-sensor-type "${{PG_SENSOR_TYPE}}" \
-    --pointgoal-sensor-dimensions ${{PG_SENSOR_DIMENSIONS}} \
-    --pointgoal-sensor-format ${{PG_FORMAT}} \
-    --nav-task "${{NAV_TASK}}" \
-    --max-episode-timesteps ${{MAX_EPISODE_TIMESTEPS}} \
-    --resnet-baseplanes 32 \
-    --weight-decay 0.0 \
-    --backbone resnet50 \
-    --tensorboard-dir "runs" \
-    --backprop {BACKPROP} \
-    --seed {SEED}
-"""
+REQUEUE = threading.Event()
+REQUEUE.clear()
 
 
-def call(cmd):
-    cmd = "bash -c '{}'".format(cmd)
-    output = subprocess.check_output(
-        shlex.split(cmd), stderr=open("/dev/null", "w")
+def requeue_handler(signum, frame):
+    # define the handler function
+    # note that this is not executed here, but rather
+    # when the associated signal is sent
+    print("signaled for requeue")
+    INTERRUPTED.set()
+    REQUEUE.set()
+
+
+signal.signal(signal.SIGUSR1, requeue_handler)
+
+
+def init_distrib():
+    master_port = int(os.environ.get("MASTER_PORT", 1234))
+    master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
+    local_rank = int(os.environ.get("LOCAL_RANK", os.environ.get("SLURM_LOCALID")))
+    world_rank = int(os.environ.get("RANK", os.environ.get("SLURM_PROCID")))
+    world_size = int(os.environ.get("WORLD_SIZE", os.environ.get("SLURM_NTASKS")))
+
+    torch.cuda.set_device(torch.device("cuda", local_rank))
+
+    tcp_store = dist.TCPStore(master_addr, master_port, world_size, world_rank == 0)
+    dist.init_process_group(
+        dist.Backend.NCCL, store=tcp_store, rank=world_rank, world_size=world_size
     )
-    return output.decode("utf-8")
+
+    return local_rank, tcp_store
 
 
 def main():
+    TASK = sys.argv[1]
+    FKEY = sys.argv[2]
+    sys.argv = sys.argv[0:1]
     n_repeats = 10
-    MP3D = "tasks/mp3d-gibson.pointnav.yaml"
-    GIBSON = "tasks/gibson-public.pointnav.yaml"
-    gpus = [16, 32, 64, 96, 128]
-    perf_results = collections.defaultdict(list)
+    sync_fracs = [0.2, 0.4, 0.5, 0.6, 0.8, 1.0]
 
-    for ngpu in gpus:
-        params = dict(
-            BACKPROP=0,
-            SEED=0,
-            TASK=MP3D,
-            NTASKS=ngpu,
-            NNODES=max(ngpu // 8, 1),
-        )
-        for _ in tqdm.trange(n_repeats):
-            params["SEED"] = random.randint(0, int(1e5))
-            res = call(template.format(**params))
-            res = [l.strip() for l in res.split("\n") if len(l.strip()) > 0]
-            res = json.loads(res[-1])
-            perf_results[ngpu].append(res)
-            tqdm.tqdm.write(str(res) + "\n")
+    local_rank, tcp_store = init_distrib()
 
-    with open("data/perf_data/gibson-mp3d_multi_nobackprop.json", "w") as f:
-        json.dump(perf_results, f)
+    world_rank = dist.get_rank()
+    ngpu = dist.get_world_size()
+
+    random.seed(0)
+    seeds = [random.randint(0, int(1e5)) for _ in range(n_repeats)]
+
+    is_done_store = dist.PrefixStore("rollout_tracker", tcp_store)
+
+    results = []
+    outname = f"{FKEY}-{ngpu}.json"
+    if osp.exists(outname):
+        with open(outname, "r") as f:
+            results = json.load(f)
+
+    results_futures = []
+    for sync_frac in sync_fracs:
+        for i in range(n_repeats):
+            args = ppo_args()
+            args.ddppo.sync_frac = sync_frac
+            args.general.seed = seeds[i]
+            args.general.backprop = True
+            args.ppo.num_updates = 10
+            args.task.task_config = TASK
+            args.general.ngpu = ngpu
+            args.general.local_rank = local_rank
+
+            if not py_.some(
+                results, lambda v: v["sync_frac"] == sync_frac and v["seed"] == seeds[i]
+            ):
+                results_futures.append((args, is_done_store))
+
+    for args in tqdm.tqdm(results_futures) if world_rank == 0 else results_futures:
+        res = work_main(*args)
+        results.append(res)
+        if world_rank == 0:
+            with open(f"{FKEY}-{ngpu}.json", "w") as f:
+                json.dump(results, f)
+
+            logger.warn(res)
+
+        if INTERRUPTED.is_set():
+            break
+
+    if world_rank == 0:
+        for sync_frac in sync_fracs:
+            print(
+                sync_frac,
+                ngpu,
+                py_()
+                .filter(lambda v: v["sync_frac"] == sync_frac and v["ngpu"] == ngpu)
+                .map("fps")
+                .mean()(results),
+            )
+
+    if REQUEUE.is_set() and world_rank == 0:
+        import time
+
+        time.sleep(1)
+        print("requeuing job " + os.environ["SLURM_JOB_ID"])
+        os.system("scontrol requeue " + os.environ["SLURM_JOB_ID"])
 
 
 if __name__ == "__main__":

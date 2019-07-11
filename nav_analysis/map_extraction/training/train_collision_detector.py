@@ -19,6 +19,9 @@ torch.backends.cudnn.benchmark = True
 
 device = torch.device("cuda", 0)
 
+num_bins = 20
+bin_size = None
+
 
 class Model(nn.Module):
     def __init__(self, input_size, linear=False):
@@ -46,10 +49,10 @@ class Model(nn.Module):
         hidden_size = 256
         self.pose_preder = nn.Sequential(
             _make_layer(input_size, hidden_size),
-            _make_layer(hidden_size, hidden_size, p=0.5),
-            _make_layer(hidden_size, hidden_size, p=0.5),
+            #  _make_layer(hidden_size, hidden_size, p=0.0),
+            #  _make_layer(hidden_size, hidden_size, p=0.0),
             nn.Dropout(p=0.5),
-            nn.Linear(hidden_size, 2),
+            nn.Linear(hidden_size, num_bins * 2),
         )
 
         hidden_size = 512
@@ -67,8 +70,7 @@ class Model(nn.Module):
         goal_pred = torch.cat(
             [
                 goal_pred[:, 0:1],
-                goal_pred[:, 1:]
-                / torch.norm(goal_pred[:, 1:], dim=-1, keepdim=True),
+                goal_pred[:, 1:] / torch.norm(goal_pred[:, 1:], dim=-1, keepdim=True),
             ],
             -1,
         )
@@ -94,6 +96,24 @@ def focal_loss(logits, y, gamma=0.0):
         return F.cross_entropy(logits, y, weight=weights)
 
 
+def pose_bins_loss(preds, gt):
+    return F.cross_entropy(preds[:, 0:num_bins], gt[:, 0]) + F.cross_entropy(
+        preds[:, num_bins:], gt[:, 1]
+    )
+
+
+def pose_bins_err(preds, gt):
+    return (
+        (
+            (torch.argmax(preds[:, 0:num_bins], -1) - gt[:, 0]).abs() * bin_size[0]
+            + (torch.argmax(preds[:, num_bins:], -1) - gt[:, 1]).abs() * bin_size[1]
+        )
+        .float()
+        .mean()
+        .item()
+    )
+
+
 def pose_loss(preds, gt, rel=True):
     if rel:
         return (
@@ -106,23 +126,22 @@ def pose_loss(preds, gt, rel=True):
 
 def pose_rel_l2_error(preds, gt, rel=True):
     if rel:
-        return (
-            (torch.norm(preds - gt, dim=-1) / torch.norm(gt, dim=-1))
-            .mean()
-            .item()
-        )
+        return (torch.norm(preds - gt, dim=-1) / torch.norm(gt, dim=-1)).mean().item()
     else:
         return torch.norm(preds - gt, dim=-1).mean().item()
 
 
 class CollisionDataset(object):
+    bins = None
+
     def __init__(self, split):
+        global bin_size
 
         fname = f"data/map_extraction/collisions/collision_and_pose_dset_{split}.h5"
         with h5.File(fname, "r") as f:
             self.xs = f["hidden_states"][()]
             self.ys = f["collision_labels"][()].astype(np.float32)
-            self.poses = f["goal_centric_positions"][()]
+            self.poses = f["positions"][()]
             self.goals = f["goal_vectors"][()]
 
         new_xs = np.zeros_like(self.xs)
@@ -130,51 +149,60 @@ class CollisionDataset(object):
         new_xs[:, inds] = self.xs[:, inds]
         #  self.xs = new_xs
 
+        if split == "train":
+            x_range = [self.poses.min(0)[0], self.poses.max(0)[0]]
+            y_range = [self.poses.min(0)[1], self.poses.max(0)[1]]
+            type(self).bins = (
+                np.linspace(x_range[0], x_range[1], num=num_bins),
+                np.linspace(y_range[0], y_range[1], num=num_bins),
+            )
+            bin_size = (
+                self.bins[0][1] - self.bins[0][0],
+                self.bins[1][1] - self.bins[1][0],
+            )
+
+        self.poses = np.stack(
+            [
+                np.searchsorted(self.bins[0], self.poses[:, 0]),
+                np.searchsorted(self.bins[1], self.poses[:, 1]),
+            ],
+            -1,
+        ).astype(np.int64)
+
         self.tensors = [self.xs, self.ys, self.poses, self.goals]
         self.tensors = [torch.from_numpy(v) for v in self.tensors]
 
 
 def train_epoch(model, optim, loader, writer, step):
     model.train()
+    total_pose_err = 0.0
     for batch in tqdm.tqdm(loader, total=len(loader), leave=False):
         batch = tuple(v.to(device) for v in batch)
         x, y, poses, goal_gt = batch
 
         logits, pose_preds, goal_preds = model(x)
         loss = F.binary_cross_entropy_with_logits(logits, y)
-        l_pose = pose_loss(pose_preds, poses)
+        l_pose = pose_bins_loss(pose_preds, poses)
 
-        l1_pen_loss = 2.0 * model.collisions_cls.weight.abs().mean()
+        l1_pen_loss = 0.0 * model.collisions_cls.weight.abs().mean()
 
         optim.zero_grad()
         (
-            loss
-            + l_pose
-            + pose_loss(goal_preds, goal_gt, rel=False)
-            + l1_pen_loss
+            loss + l_pose + pose_loss(goal_preds, goal_gt, rel=False) + l1_pen_loss
         ).backward()
         optim.step()
 
-        acc = (
-            (y == (torch.sigmoid(logits) > 0.5).float()).float().mean().item()
-        )
+        acc = (y == (torch.sigmoid(logits) > 0.5).float()).float().mean().item()
         writer.add_scalars("acc", {"train": acc}, step)
         writer.add_scalars("loss", {"train": loss.item()}, step)
         writer.add_scalars(
-            "pose_error", {"train": pose_rel_l2_error(pose_preds, poses)}, step
+            "pose_error", {"train": pose_bins_err(pose_preds, poses)}, step
         )
+        total_pose_err += pose_bins_err(pose_preds, poses)
 
         step += 1
 
-    w = model.collisions_cls.weight.abs()
-    outlier_val = w.mean().detach().item() + 3.0 * w.std().detach().item()
-    outlier_val = w.max().item() * 0.8
-    print("")
-    print((w > outlier_val).float().sum().item())
-    print(w.max().item())
-    top2 = w.topk(5)[0]
-    print((top2[0, 0] - top2[0, -1]).item())
-    print(w.topk(5)[1].detach().cpu().numpy().tolist())
+    print(total_pose_err / len(loader))
 
     return step
 
@@ -196,14 +224,12 @@ def eval_epoch(model, loader, writer, step):
 
         total_acc += acc.item()
         total_loss += loss.item()
-        total_pose_err += pose_rel_l2_error(pose_preds, poses)
+        total_pose_err += pose_bins_err(pose_preds, poses)
         total_goal_err += pose_rel_l2_error(goal_pred, goal_gt, rel=False)
 
     writer.add_scalars("acc", {"val": total_acc / len(loader)}, step)
     writer.add_scalars("loss", {"val": total_loss / len(loader)}, step)
-    writer.add_scalars(
-        "pose_error", {"val": total_pose_err / len(loader)}, step
-    )
+    writer.add_scalars("pose_error", {"val": total_pose_err / len(loader)}, step)
 
     tqdm.tqdm.write("Acc={:.3f}".format(total_acc / len(loader) * 1e2))
     tqdm.tqdm.write("PoseErr={:.3f}".format(total_pose_err / len(loader)))

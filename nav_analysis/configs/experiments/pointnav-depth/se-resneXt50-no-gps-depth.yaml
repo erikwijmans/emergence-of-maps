@@ -1,0 +1,12 @@
+model:
+    backbone: se_resneXt50
+    norm_visual_inputs: False
+
+ppo:
+    num_updates: 75000
+
+task:
+    pointgoal_sensor_type: SPARSE
+
+    agent_sensors:
+        - DEPTH_SENSOR
