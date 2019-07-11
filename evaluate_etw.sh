@@ -24,6 +24,7 @@ SIM_GPU_IDS="1"
 PTH_GPU_ID="1"
 SENSOR_TYPES="RGB_SENSOR"
 NUM_PROCESSES=8
+<<<<<<< HEAD
 CHECKPOINT_MODEL_DIR="data/checkpoints/gibson-2plus-se-resneXt50-long-rgb"
 ENV_NAME=$(basename ${CHECKPOINT_MODEL_DIR})
 # ENV_NAME="testing"
@@ -32,6 +33,13 @@ MAX_EPISODE_TIMESTEPS=500
 # NAV_TASK="loopnav"
 
 TASK_CONFIG="tasks/gibson-public.pointnav.yaml"
+=======
+CHECKPOINT_MODEL_DIR="data/checkpoints/mp3d-gibson-2plus-se-resneXt50-long-depth"
+ENV_NAME=$(basename ${CHECKPOINT_MODEL_DIR})
+# ENV_NAME="testing"
+MAX_EPISODE_TIMESTEPS=500
+TASK_CONFIG="tasks/gibson.pointnav.yaml"
+>>>>>>> 3d439e9612959f877643bebdecbaf8dd90a83290
 NAV_TASK="pointnav"
 
 if [ ${NAV_TASK} == "loopnav" ]

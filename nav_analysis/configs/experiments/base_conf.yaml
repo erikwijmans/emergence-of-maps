@@ -44,7 +44,6 @@ ppo:
 ddppo:
     sync_frac: 0.8
 
-
 logging:
     log_file: ???
     checkpoint_folder: ???
