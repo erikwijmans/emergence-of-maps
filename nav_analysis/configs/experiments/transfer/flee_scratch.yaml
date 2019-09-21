@@ -1,0 +1,22 @@
+model:
+    backbone: se_resneXt50
+    norm_visual_inputs: True
+
+ppo:
+    num_updates: 7500
+    ppo_epoch: 4
+
+logging:
+    checkpoint_interval: 200
+
+
+task:
+    nav_task: flee
+    task_config: tasks/gibson-public.pointnav.yaml
+    max_episode_timesteps: 250
+
+    shuffle_interval: 3000
+
+    agent_sensors: 
+        - RGB_SENSOR
+

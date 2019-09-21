@@ -1,0 +1,3 @@
+transfer:
+    pretrained_encoder: True
+    pretrained_path: /private/home/erikwijmans/projects/navigation-analysis-habitat/data/checkpoints/se_resneXt50_imagenet.pth

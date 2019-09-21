@@ -1,0 +1,3 @@
+transfer:
+    pretrained_encoder: True
+    pretrained_path: /private/home/erikwijmans/projects/navigation-analysis-habitat/data/checkpoints/gibson-2plus-se-resneXt50-long-rgb/ckpt.300.pth

@@ -39,12 +39,10 @@ class CustomFixedCategorical(torch.distributions.Categorical):
 
 
 class CategoricalNet(nn.Module):
-    def __init__(self, num_inputs, num_outputs, task, two_headed):
+    def __init__(self, num_inputs, num_outputs, task="pointnav", two_headed=False):
         super().__init__()
 
-        if task == "pointnav":
-            self.linear = nn.Linear(num_inputs, num_outputs)
-        else:
+        if task == "loopnav":
             self.forward_actor = nn.Sequential(
                 nn.Linear(num_inputs, num_inputs // 2),
                 nn.ReLU(True),
@@ -59,6 +57,8 @@ class CategoricalNet(nn.Module):
                     nn.Linear(num_inputs // 2, num_outputs),
                 )
             self._two_headed = two_headed
+        else:
+            self.linear = nn.Linear(num_inputs, num_outputs)
 
         self._task = task
 
@@ -109,16 +109,11 @@ class RolloutStorage:
 
         for sensor in observation_space.spaces:
             self.observations[sensor] = torch.zeros(
-                num_steps + 1,
-                num_envs,
-                *observation_space.spaces[sensor].shape
+                num_steps + 1, num_envs, *observation_space.spaces[sensor].shape
             )
 
         self.recurrent_hidden_states = torch.zeros(
-            num_steps + 1,
-            num_recurrent_layers,
-            num_envs,
-            recurrent_hidden_state_size,
+            num_steps + 1, num_recurrent_layers, num_envs, recurrent_hidden_state_size
         )
 
         self.rewards = torch.zeros(num_steps, num_envs, 1)
@@ -138,7 +133,7 @@ class RolloutStorage:
             self.actions = self.actions.long()
             self.prev_actions = self.prev_actions.long()
 
-        self.masks = torch.ones(num_steps + 1, num_envs, 1)
+        self.masks = torch.zeros(num_steps + 1, num_envs, 1)
 
         self.num_steps = num_steps
         self.step = 0
@@ -169,12 +164,8 @@ class RolloutStorage:
         entropy,
     ):
         for sensor in observations:
-            self.observations[sensor][self.step + 1].copy_(
-                observations[sensor]
-            )
-        self.recurrent_hidden_states[self.step + 1].copy_(
-            recurrent_hidden_states
-        )
+            self.observations[sensor][self.step + 1].copy_(observations[sensor])
+        self.recurrent_hidden_states[self.step + 1].copy_(recurrent_hidden_states)
         self.actions[self.step].copy_(actions)
         self.prev_actions[self.step + 1].copy_(actions)
         self.action_log_probs[self.step].copy_(action_log_probs)
@@ -187,13 +178,9 @@ class RolloutStorage:
 
     def after_update(self):
         for sensor in self.observations:
-            self.observations[sensor][0].copy_(
-                self.observations[sensor][self.step]
-            )
+            self.observations[sensor][0].copy_(self.observations[sensor][self.step])
 
-        self.recurrent_hidden_states[0].copy_(
-            self.recurrent_hidden_states[self.step]
-        )
+        self.recurrent_hidden_states[0].copy_(self.recurrent_hidden_states[self.step])
         self.masks[0].copy_(self.masks[self.step])
         self.prev_actions[0].copy_(self.prev_actions[self.step])
 
@@ -270,18 +257,14 @@ class RolloutStorage:
 
             # These are all tensors of size (T, N, -1)
             for sensor in observations_batch:
-                observations_batch[sensor] = torch.stack(
-                    observations_batch[sensor], 1
-                )
+                observations_batch[sensor] = torch.stack(observations_batch[sensor], 1)
 
             actions_batch = torch.stack(actions_batch, 1)
             prev_actions_batch = torch.stack(prev_actions_batch, 1)
             value_preds_batch = torch.stack(value_preds_batch, 1)
             return_batch = torch.stack(return_batch, 1)
             masks_batch = torch.stack(masks_batch, 1)
-            old_action_log_probs_batch = torch.stack(
-                old_action_log_probs_batch, 1
-            )
+            old_action_log_probs_batch = torch.stack(old_action_log_probs_batch, 1)
             adv_targ = torch.stack(adv_targ, 1)
 
             # States is just a (num_layers, N, -1) tensor
@@ -318,15 +301,38 @@ class RolloutStorage:
             )
 
 
-def batch_obs(observations):
+def _to_tensor(v):
+    if torch.is_tensor(v):
+        return v
+    elif isinstance(v, np.ndarray):
+        return torch.from_numpy(v)
+    else:
+        return torch.tensor(v, dtype=torch.float)
+
+
+def batch_obs(observations, device=None):
+    r"""Transpose a batch of observation dicts to a dict of batched
+    observations.
+
+    Args:
+        observations:  list of dicts of observations.
+        device: The torch.device to put the resulting tensors on.
+            Will not move the tensors if None
+
+    Returns:
+        transposed dict of lists of observations.
+    """
     batch = defaultdict(list)
 
     for obs in observations:
         for sensor in obs:
-            batch[sensor].append(torch.from_numpy(np.array(obs[sensor])))
+            batch[sensor].append(_to_tensor(obs[sensor]))
 
     for sensor in batch:
-        batch[sensor] = torch.stack(batch[sensor]).float()
+        batch[sensor] = torch.stack(batch[sensor], dim=0).to(
+            device=device, dtype=torch.float
+        )
+
     return batch
 
 
@@ -340,16 +346,17 @@ def ppo_args():
 
     opts = omegaconf.OmegaConf.load(
         osp.join(
-            osp.dirname(nav_analysis.__file__),
-            "configs/experiments/base_conf.yaml",
+            osp.dirname(nav_analysis.__file__), "configs/experiments/base_conf.yaml"
         )
     )
     for conf_name in args.extra_confs if args.extra_confs is not None else []:
-        opts.merge_with(
-            omegaconf.OmegaConf.load(
-                osp.join(osp.dirname(nav_analysis.__file__), conf_name)
+        fname = osp.join(osp.dirname(nav_analysis.__file__), conf_name)
+        if not osp.exists(fname):
+            fname = osp.join(
+                osp.abspath(osp.dirname(nav_analysis.__file__)), "..", conf_name
             )
-        )
+
+        opts.merge_with(omegaconf.OmegaConf.load(fname))
 
     if args.opts is not None:
         opts.merge_with_dotlist(args.opts)

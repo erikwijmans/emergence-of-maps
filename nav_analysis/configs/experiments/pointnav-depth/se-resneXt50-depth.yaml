@@ -1,0 +1,10 @@
+model:
+    backbone: se_resneXt50
+    norm_visual_inputs: False
+
+ppo:
+    num_updates: 75000
+
+task:
+    agent_sensors:
+        - DEPTH_SENSOR

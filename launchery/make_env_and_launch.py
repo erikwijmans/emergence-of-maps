@@ -5,8 +5,17 @@ import shlex
 import subprocess
 import datetime
 import uuid
+import argparse
 
 user = getpass.getuser()
+
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("script_name", type=str)
+    parser.add_argument("--sbatch-opts", type=str, default="")
+
+    return parser.parse_args()
 
 
 def call(cmd, cwd=None, capture_out=False, env=None):
@@ -19,12 +28,9 @@ def call(cmd, cwd=None, capture_out=False, env=None):
 
 
 def main():
-    if user == "erikwijmans":
-        script_name = "distrib_batch_etw.sh"
-    elif user == "akadian":
-        script_name = "distrib_batch_kadian.sh"
+    args = parse_args()
 
-    with open(script_name, "r") as f:
+    with open(args.script_name, "r") as f:
         script_content = f.read()
 
     time = datetime.datetime.now()
@@ -37,10 +43,7 @@ def main():
         "{}-{}-{}".format(time.hour, time.minute, time.second),
     )
 
-    for cwd in [
-        os.getcwd(),
-        osp.join(os.getcwd(), "habitat-api-navigation-analysis"),
-    ]:
+    for cwd in [os.getcwd(), osp.join(os.getcwd(), "habitat-api-navigation-analysis")]:
         call(
             "python setup.py build --force --build-lib {}".format(code_dir),
             cwd=cwd,
@@ -54,14 +57,13 @@ def main():
 
     env_for_job = {k: v for k, v in os.environ.items()}
     env_for_job["PYTHONPATH"] = code_dir
+    env_for_job = {k: v for k, v in env_for_job.items() if not k.startswith("SLURM_")}
 
     sbatch_res = call(
-        "sbatch {}".format(launch_script_name),
+        "sbatch {} {}".format(args.sbatch_opts, launch_script_name),
         cwd=osp.join(os.getcwd(), "sandbox"),
         env=env_for_job,
     )
-
-    os.remove(launch_script_name)
 
 
 if __name__ == "__main__":

@@ -6,16 +6,18 @@
 #SBATCH --nodes 1
 #SBATCH --cpus-per-task 10
 #SBATCH --ntasks-per-node 1
-#SBATCH --mem=100GB
 #SBATCH --partition=dev
-#SBATCH --time=24:00:00
+#SBATCH --time=72:00:00
+
+. /private/home/erikwijmans/miniconda3/etc/profile.d/conda.sh
+conda deactivate
+conda activate nav-analysis-base
 
 module purge
 module load cuda/10.0
-module load cudnn/v7.4-cuda.10.0
+module load cudnn/v7.6-cuda.10.0
 module load NCCL/2.4.2-1-cuda.10.0
 
-export PYTHONPATH=$(pwd)/habitat-api-navigation-analysis:${PYTHONPATH}
 export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu/nvidia-opengl:${LD_LIBRARY_PATH}
 export GLOG_minloglevel=2
 export MAGNUM_LOG=quiet
@@ -23,23 +25,13 @@ export MAGNUM_LOG=quiet
 SIM_GPU_IDS="1"
 PTH_GPU_ID="1"
 SENSOR_TYPES="RGB_SENSOR"
-NUM_PROCESSES=8
-<<<<<<< HEAD
-CHECKPOINT_MODEL_DIR="data/checkpoints/gibson-2plus-se-resneXt50-long-rgb"
+NUM_PROCESSES=6
+CHECKPOINT_MODEL_DIR="data/checkpoints/gibson-public-explore-controller-512-rgb-r${SLURM_ARRAY_TASK_ID}"
+CHECKPOINT_MODEL_DIR="data/checkpoints/mp3d-gibson-2plus-resnet50-long-rgb"
 ENV_NAME=$(basename ${CHECKPOINT_MODEL_DIR})
 # ENV_NAME="testing"
 MAX_EPISODE_TIMESTEPS=500
-# TASK_CONFIG="tasks/loopnav/gibson-public.loopnav.yaml"
-# NAV_TASK="loopnav"
-
 TASK_CONFIG="tasks/gibson-public.pointnav.yaml"
-=======
-CHECKPOINT_MODEL_DIR="data/checkpoints/mp3d-gibson-2plus-se-resneXt50-long-depth"
-ENV_NAME=$(basename ${CHECKPOINT_MODEL_DIR})
-# ENV_NAME="testing"
-MAX_EPISODE_TIMESTEPS=500
-TASK_CONFIG="tasks/gibson.pointnav.yaml"
->>>>>>> 3d439e9612959f877643bebdecbaf8dd90a83290
 NAV_TASK="pointnav"
 
 if [ ${NAV_TASK} == "loopnav" ]
@@ -71,6 +63,7 @@ python -u -m nav_analysis.evaluate_ppo \
     --eval-task-config ${TASK_CONFIG} \
     --nav-task ${NAV_TASK} \
     --tensorboard-dir "runs/${ENV_NAME}" \
-    --nav-env-verbose 0 \
+    --nav-env-verbose 0
     # --max-memory-length ${i}
 # done
+

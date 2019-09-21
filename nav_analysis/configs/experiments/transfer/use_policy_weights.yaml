@@ -1,0 +1,2 @@
+transfer:
+    pretrained_policy: True

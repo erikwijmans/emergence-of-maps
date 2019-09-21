@@ -19,8 +19,8 @@ torch.backends.cudnn.benchmark = True
 
 device = torch.device("cuda", 0)
 
-num_bins = 20
-bin_size = None
+num_bins = 30
+bin_size = 1.0
 
 
 class Model(nn.Module):
@@ -48,10 +48,9 @@ class Model(nn.Module):
 
         hidden_size = 256
         self.pose_preder = nn.Sequential(
-            _make_layer(input_size, hidden_size),
+            _make_layer(input_size, hidden_size, p=0.0),
             #  _make_layer(hidden_size, hidden_size, p=0.0),
             #  _make_layer(hidden_size, hidden_size, p=0.0),
-            nn.Dropout(p=0.5),
             nn.Linear(hidden_size, num_bins * 2),
         )
 
@@ -70,8 +69,7 @@ class Model(nn.Module):
         goal_pred = torch.cat(
             [
                 goal_pred[:, 0:1],
-                goal_pred[:, 1:]
-                / torch.norm(goal_pred[:, 1:], dim=-1, keepdim=True),
+                goal_pred[:, 1:] / torch.norm(goal_pred[:, 1:], dim=-1, keepdim=True),
             ],
             -1,
         )
@@ -106,10 +104,8 @@ def pose_bins_loss(preds, gt):
 def pose_bins_err(preds, gt):
     return (
         (
-            (torch.argmax(preds[:, 0:num_bins], -1) - gt[:, 0]).abs()
-            * bin_size[0]
-            + (torch.argmax(preds[:, num_bins:], -1) - gt[:, 1]).abs()
-            * bin_size[1]
+            (torch.argmax(preds[:, 0:num_bins], -1) - gt[:, 0]).abs() * bin_size[0]
+            + (torch.argmax(preds[:, num_bins:], -1) - gt[:, 1]).abs() * bin_size[1]
         )
         .float()
         .mean()
@@ -129,11 +125,7 @@ def pose_loss(preds, gt, rel=True):
 
 def pose_rel_l2_error(preds, gt, rel=True):
     if rel:
-        return (
-            (torch.norm(preds - gt, dim=-1) / torch.norm(gt, dim=-1))
-            .mean()
-            .item()
-        )
+        return (torch.norm(preds - gt, dim=-1) / torch.norm(gt, dim=-1)).mean().item()
     else:
         return torch.norm(preds - gt, dim=-1).mean().item()
 
@@ -142,11 +134,11 @@ class CollisionDataset(object):
     bins = None
 
     def __init__(self, split):
-        global bin_size
 
-        fname = f"data/map_extraction/collisions/collision_and_pose_dset_{split}.h5"
+        fname = f"data/map_extraction/collisions/loopnav-static-cart-blind_{split}.h5"
         with h5.File(fname, "r") as f:
             self.xs = f["hidden_states"][()]
+            #  self.xs = self.xs.reshape(self.xs.shape[0], -1, 512)
             self.ys = f["collision_labels"][()].astype(np.float32)
             self.poses = f["positions"][()]
             self.goals = f["goal_vectors"][()]
@@ -195,16 +187,11 @@ def train_epoch(model, optim, loader, writer, step):
 
         optim.zero_grad()
         (
-            loss
-            + l_pose
-            + pose_loss(goal_preds, goal_gt, rel=False)
-            + l1_pen_loss
+            loss + l_pose + pose_loss(goal_preds, goal_gt, rel=False) + l1_pen_loss
         ).backward()
         optim.step()
 
-        acc = (
-            (y == (torch.sigmoid(logits) > 0.5).float()).float().mean().item()
-        )
+        acc = (y == (torch.sigmoid(logits) > 0.5).float()).float().mean().item()
         writer.add_scalars("acc", {"train": acc}, step)
         writer.add_scalars("loss", {"train": loss.item()}, step)
         writer.add_scalars(
@@ -241,9 +228,7 @@ def eval_epoch(model, loader, writer, step):
 
     writer.add_scalars("acc", {"val": total_acc / len(loader)}, step)
     writer.add_scalars("loss", {"val": total_loss / len(loader)}, step)
-    writer.add_scalars(
-        "pose_error", {"val": total_pose_err / len(loader)}, step
-    )
+    writer.add_scalars("pose_error", {"val": total_pose_err / len(loader)}, step)
 
     tqdm.tqdm.write("Acc={:.3f}".format(total_acc / len(loader) * 1e2))
     tqdm.tqdm.write("PoseErr={:.3f}".format(total_pose_err / len(loader)))
@@ -254,7 +239,7 @@ def _build_dsets():
     return (
         torch.utils.data.TensorDataset(*CollisionDataset("train").tensors),
         torch.utils.data.TensorDataset(*CollisionDataset("val").tensors),
-        2048,
+        512 * 6,
     )
 
 

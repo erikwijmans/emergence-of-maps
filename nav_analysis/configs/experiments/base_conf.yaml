@@ -3,6 +3,12 @@ general:
     sim_gpu_id: ???
     seed: 100
 
+transfer:
+    pretrained_encoder: False
+    pretrained_policy: False
+    fine_tune_encoder: False
+    pretrained_path: ???
+
 model:
     rnn_type: LSTM
     hidden_size: 512
@@ -42,7 +48,7 @@ ppo:
     num_updates: 150000
 
 ddppo:
-    sync_frac: 0.8
+    sync_frac: 0.6
 
 logging:
     log_file: ???

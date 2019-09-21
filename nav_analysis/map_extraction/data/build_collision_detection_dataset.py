@@ -38,14 +38,14 @@ def main():
     trained_args.ppo.num_processes = args.num_processes
     trained_args.general.sim_gpu_id = args.gpu_id
 
-    trained_args.task.nav_task = "pointnav"
 
     trained_args.general.video = False
     trained_args.task.shuffle_interval = int(1e3)
 
-    for split in ["train", "val"]:
+    for split in ["train", "val"][::-1]:
         num_samples = getattr(args, f"num_{split}_samples")
-        with construct_envs(trained_args, split) as envs, tqdm.tqdm(
+        trained_args.task.nav_task = "pointnav"
+        with construct_envs(trained_args, split, dset_measures=True) as envs, tqdm.tqdm(
             total=num_samples
         ) as pbar:
             trained_args.task.nav_task = "loopnav"
@@ -95,9 +95,7 @@ def main():
             num_samples = int(num_samples)
             collision_labels = np.zeros((num_samples,), dtype=np.int64)
             positions = np.zeros((num_samples, 2), dtype=np.float32)
-            goal_centric_positions = np.zeros(
-                (num_samples, 2), dtype=np.float32
-            )
+            goal_centric_positions = np.zeros((num_samples, 2), dtype=np.float32)
             goal_vectors = np.zeros((num_samples, 3), dtype=np.float32)
             hidden_states = np.zeros(
                 (
@@ -109,7 +107,12 @@ def main():
             )
             num_collisions = 0.0
             dones = [True] * args.num_processes
+            infos = None
+            episode_lens = [0.0] * args.num_processes
             next_idx = 0
+            avg_spl = 0.0
+            num_done = 0.0
+            current_episodes = envs.current_episodes()
             while next_idx < num_samples:
                 with torch.no_grad():
                     _, actions, _, _, test_recurrent_hidden_states = actor_critic.act(
@@ -121,7 +124,14 @@ def main():
                     )
 
                 for i in range(args.num_processes):
+                    if infos is None:
+                        break
+
                     if dones[i]:
+                        avg_spl = (num_done * avg_spl + infos[i]["spl"]) / (
+                            num_done + 1
+                        )
+                        num_done += 1
                         continue
 
                     if np.random.uniform(0, 1.0) > 0.1:
@@ -138,28 +148,22 @@ def main():
                     )
                     positions[next_idx] = infos[i]["ego_pose"]
                     goal_centric_positions[next_idx] = infos[i]["goal_pose"]
-                    goal_vectors[next_idx] = (
-                        batch["pointgoal"][i].cpu().numpy()
-                    )
+                    goal_vectors[next_idx] = batch["pointgoal"][i].cpu().numpy()
                     hidden_states[next_idx] = (
-                        test_recurrent_hidden_states[:, i]
-                        .cpu()
-                        .view(-1)
-                        .numpy()
+                        test_recurrent_hidden_states[:, i].cpu().view(-1).numpy()
                     )
                     num_collisions += collision_labels[next_idx]
                     next_idx += 1
 
                     pbar.update()
                     pbar.set_postfix(
-                        pc="{:.3f}".format(num_collisions / next_idx)
+                        pc="{:.3f}".format(num_collisions / next_idx), avg_spl=avg_spl
                     )
 
+                current_episodes = envs.current_episodes()
                 outputs = envs.step([a[0].item() for a in actions])
 
-                observations, rewards, dones, infos = [
-                    list(x) for x in zip(*outputs)
-                ]
+                observations, rewards, dones, infos = [list(x) for x in zip(*outputs)]
                 batch = batch_obs(observations)
                 for sensor in batch:
                     batch[sensor] = batch[sensor].to(device)
@@ -169,15 +173,14 @@ def main():
                     dtype=torch.float,
                     device=device,
                 )
+                prev_actions.copy_(actions)
 
         with h5.File(f"{args.output_path}_{split}.h5", "w") as f:
             f.create_dataset("collision_labels", data=collision_labels)
             f.create_dataset("positions", data=positions)
             f.create_dataset("hidden_states", data=hidden_states)
             f.create_dataset("goal_vectors", data=goal_vectors)
-            f.create_dataset(
-                "goal_centric_positions", data=goal_centric_positions
-            )
+            f.create_dataset("goal_centric_positions", data=goal_centric_positions)
 
 
 if __name__ == "__main__":

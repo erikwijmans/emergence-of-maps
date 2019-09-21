@@ -1,0 +1,2 @@
+task:
+    task_config: tasks/gibson.pointnav.yaml

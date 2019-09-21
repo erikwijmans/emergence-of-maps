@@ -15,13 +15,17 @@ from time import sleep, time
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 import torch.distributed as dist
 from torch.utils import tensorboard
 
 from habitat import logger
 from nav_analysis.rl.ppo import PPO, Policy, RolloutStorage
+from nav_analysis.rl.ppo.driver_policy import DriverPolicy
 from nav_analysis.rl.ppo.utils import batch_obs, ppo_args, update_linear_schedule
 from nav_analysis.train_ppo import construct_envs
+from gym.spaces.dict_space import Dict as SpaceDict
+from gym import spaces
 
 torch.backends.cudnn.enabled = True
 torch.backends.cudnn.benchmark = True
@@ -127,7 +131,7 @@ def main():
     with construct_envs(args) as envs:
 
         num_recurrent_layers = args.model.num_recurrent_layers
-        actor_critic = Policy(
+        pointnav_agent = Policy(
             observation_space=envs.observation_spaces[0],
             action_space=envs.action_spaces[0],
             hidden_size=args.model.hidden_size,
@@ -142,50 +146,23 @@ def main():
             two_headed=args.model.two_headed,
         )
 
-        if args.transfer.pretrained_policy:
-            policy_weights = torch.load(
-                args.transfer.pretrained_path, map_location="cpu"
-            )["state_dict"]
+        pointnav_agent.load_state_dict(
+            {
+                k[len("actor_critic.") :]: v
+                for k, v in torch.load(
+                    args.transfer.pretrained_path, map_location="cpu"
+                )["state_dict"].items()
+                if "ddp" not in k and "actor_critic" in k
+            }
+        )
+        pointnav_agent.eval()
+        for param in pointnav_agent.parameters():
+            param.requires_grad_(False)
 
-            actor_critic.load_state_dict(
-                {
-                    k[len("actor_critic.") :]: v
-                    for k, v in policy_weights.items()
-                    if "actor_critic." in k
-                }
-            )
-            torch.nn.init.orthogonal_(actor_critic.net.critic_linear.weight, gain=0.01)
-            torch.nn.init.constant_(actor_critic.net.critic_linear.bias, 0)
-
-            del policy_weights
-
-        if args.transfer.pretrained_encoder:
-            enc_weights = torch.load(args.transfer.pretrained_path, map_location="cpu")[
-                "state_dict"
-            ]
-            actor_critic.net.cnn[0].load_state_dict(
-                {
-                    k[len("actor_critic.net.cnn.0.") :]: v
-                    for k, v in enc_weights.items()
-                    if k.startswith("actor_critic.net.cnn.0.")
-                }
-            )
-            actor_critic.net.running_mean_and_var.load_state_dict(
-                {
-                    k[len("actor_critic.net.running_mean_and_var.") :]: v
-                    for k, v in enc_weights.items()
-                    if k.startswith("actor_critic.net.running_mean_and_var.")
-                }
-            )
-
-            if not args.transfer.fine_tune_encoder:
-                for param in actor_critic.net.cnn[0].parameters():
-                    param.requires_grad_(False)
-
-            del enc_weights
+        pointnav_agent.to(device)
+        actor_critic = DriverPolicy(pointnav_agent)
 
         actor_critic.to(device)
-
         agent = PPO(
             actor_critic,
             args.ppo.clip_param,
@@ -248,26 +225,40 @@ def main():
                 )
             )
 
+        observations = envs.reset()
+        batch = batch_obs(observations)
+        for k, v in batch.items():
+            batch[k] = v.to(device)
+
+        features = pointnav_agent.net.cnn[0](
+            pointnav_agent.net.running_mean_and_var(
+                F.avg_pool2d(batch["rgb"].float().permute(0, 3, 1, 2), 2)
+            )
+        )
+
         logger.info(envs.observation_spaces[0])
 
         rollouts = RolloutStorage(
             args.ppo.num_steps,
             envs.num_envs,
-            envs.observation_spaces[0],
+            SpaceDict(
+                {
+                    "features": spaces.Box(
+                        low=np.iinfo(np.uint32).min,
+                        high=np.iinfo(np.uint32).max,
+                        shape=(128, 4, 4),
+                        dtype=np.float32,
+                    ),
+                    **envs.observation_spaces[0].spaces,
+                }
+            ),
             envs.action_spaces[0],
-            args.model.hidden_size,
-            num_recurrent_layers=actor_critic.net.num_recurrent_layers,
+            pointnav_agent.net._hidden_size,
+            num_recurrent_layers=pointnav_agent.net.num_recurrent_layers + 4,
         )
         rollouts.to(device)
 
-        observations = envs.reset()
-
-        batch = batch_obs(observations, device)
-        for sensor in rollouts.observations:
-            rollouts.observations[sensor][0].copy_(batch[sensor])
-
-        observations = None
-        batch = None
+        rollouts.observations["features"][0].copy_(features)
 
         episode_rewards = torch.zeros(envs.num_envs, 1).to(device)
         episode_counts = torch.zeros(envs.num_envs, 1).to(device)
@@ -276,27 +267,7 @@ def main():
         window_episode_reward = deque(maxlen=args.logging.reward_window_size)
         window_episode_counts = deque(maxlen=args.logging.reward_window_size)
 
-        if args.task.nav_task == "pointnav":
-            episode_spls = torch.zeros(envs.num_envs, 1).to(device)
-            episode_successes = torch.zeros(envs.num_envs, 1).to(device)
-
-            window_episode_spl = deque(maxlen=args.logging.reward_window_size)
-            window_episode_successes = deque(maxlen=args.logging.reward_window_size)
-        elif args.task.nav_task == "loopnav":
-            episode_stage_1_spls = torch.zeros(envs.num_envs, 1).to(device)
-            episode_stage_2_spls = torch.zeros(envs.num_envs, 1).to(device)
-            episode_stage_1_d_deltas = torch.zeros(envs.num_envs, 1).to(device)
-            episode_stage_2_d_deltas = torch.zeros(envs.num_envs, 1).to(device)
-
-            window_episode_stage_1_spl = deque(maxlen=args.logging.reward_window_size)
-            window_episode_stage_2_spl = deque(maxlen=args.logging.reward_window_size)
-            window_episode_stage_1_d_delta = deque(
-                maxlen=args.logging.reward_window_size
-            )
-            window_episode_stage_2_d_delta = deque(
-                maxlen=args.logging.reward_window_size
-            )
-        elif args.task.nav_task == "flee":
+        if args.task.nav_task == "flee":
             episode_flee_dist = torch.zeros(envs.num_envs, 1, device=device)
 
             window_episode_flee_dist = deque(maxlen=args.logging.reward_window_size)
@@ -313,7 +284,6 @@ def main():
         if tb_enabled:
             writer_kwargs = dict(log_dir=tensorboard_dir, purge_step=count_steps.item())
 
-        rollout_lens = []
         with (
             tensorboard.SummaryWriter(**writer_kwargs)
             if tb_enabled
@@ -352,6 +322,7 @@ def main():
                             rollouts.prev_actions[step],
                             rollouts.masks[step],
                         )
+
                     pth_time += time() - t_sample_action
 
                     t_step_env = time()
@@ -364,7 +335,10 @@ def main():
                     env_time += time() - t_step_env
 
                     t_update_stats = time()
-                    batch = batch_obs(observations, device)
+                    batch = batch_obs(observations)
+                    for k, v in batch.items():
+                        batch[k] = v.to(device)
+
                     rewards = torch.tensor(rewards, dtype=torch.float, device=device)
                     rewards = rewards.unsqueeze(1)
 
@@ -379,80 +353,7 @@ def main():
                     episode_counts += 1.0 - masks
                     current_episode_reward *= masks
 
-                    if args.task.nav_task == "pointnav":
-                        key_spl = "spl"
-                        episode_spls += torch.tensor(
-                            [
-                                [info[key_spl]] if done else [0.0]
-                                for info, done in zip(infos, dones)
-                            ],
-                            dtype=torch.float,
-                            device=device,
-                        )
-                        episode_successes += torch.tensor(
-                            [
-                                [1.0] if done and info[key_spl] > 0 else [0.0]
-                                for info, done in zip(infos, dones)
-                            ],
-                            dtype=torch.float,
-                            device=device,
-                        )
-                    elif args.task.nav_task == "loopnav":
-                        key_spl = "loop_spl"
-                        episode_spls += torch.tensor(
-                            [
-                                [info[key_spl]["total_spl"]] if done else [0.0]
-                                for info, done in zip(infos, dones)
-                            ],
-                            dtype=torch.float,
-                            device=device,
-                        )
-                        episode_successes += torch.tensor(
-                            [
-                                [1.0]
-                                if done and info[key_spl]["total_spl"] > 0
-                                else [0.0]
-                                for info, done in zip(infos, dones)
-                            ],
-                            dtype=torch.float,
-                            device=device,
-                        )
-
-                        episode_stage_1_spls += torch.tensor(
-                            [
-                                [info[key_spl]["stage_1_spl"]] if done else [0.0]
-                                for info, done in zip(infos, dones)
-                            ],
-                            dtype=torch.float,
-                            device=device,
-                        )
-                        episode_stage_2_spls += torch.tensor(
-                            [
-                                [info[key_spl]["stage_2_spl"]] if done else [0.0]
-                                for info, done in zip(infos, dones)
-                            ],
-                            dtype=torch.float,
-                            device=device,
-                        )
-
-                        episode_stage_1_d_deltas += torch.tensor(
-                            [
-                                [info["loop_d_delta"]["stage_1"]] if done else [0.0]
-                                for info, done in zip(infos, dones)
-                            ],
-                            dtype=torch.float,
-                            device=device,
-                        )
-
-                        episode_stage_2_d_deltas += torch.tensor(
-                            [
-                                [info["loop_d_delta"]["stage_2"]] if done else [0.0]
-                                for info, done in zip(infos, dones)
-                            ],
-                            dtype=torch.float,
-                            device=device,
-                        )
-                    elif args.task.nav_task == "flee":
+                    if args.task.nav_task == "flee":
                         episode_flee_dist += torch.tensor(
                             [
                                 [info["flee_distance"]] if done else [0.0]
@@ -470,6 +371,13 @@ def main():
                             dtype=torch.float,
                             device=device,
                         )
+
+                    features = pointnav_agent.net.cnn[0](
+                        pointnav_agent.net.running_mean_and_var(
+                            F.avg_pool2d(batch["rgb"].float().permute(0, 3, 1, 2), 2)
+                        )
+                    )
+                    batch["features"] = features
 
                     rollouts.insert(
                         batch,
@@ -499,15 +407,6 @@ def main():
                 dist.all_reduce(t_sync)
                 sync_time += t_sync.item() / world_size
 
-                rollout_length = list(
-                    torch.full((WORLD_SIZE, 1), rollouts.step, device=device).unbind(0)
-                )
-                dist.all_gather(
-                    rollout_length, torch.full((1,), rollouts.step, device=device)
-                )
-                rollout_length = torch.cat(rollout_length, 0)
-                rollout_lens.append(rollout_length.cpu().byte())
-
                 step_delta = torch.full_like(count_steps, rollouts.step * envs.num_envs)
                 dist.all_reduce(step_delta)
                 count_steps += step_delta
@@ -529,11 +428,6 @@ def main():
                 )
 
                 actor_critic.train()
-                if (
-                    not args.transfer.fine_tune_encoder
-                    and args.transfer.pretrained_policy
-                ):
-                    actor_critic.net.running_mean_and_var.eval()
 
                 value_loss, action_loss, dist_entropy = agent.update(rollouts)
 
@@ -552,31 +446,7 @@ def main():
                 if WORLD_RANK == 0:
                     is_done_store.set("num_done", "0")
 
-                if args.task.nav_task == "pointnav":
-                    stats = torch.cat(
-                        [
-                            episode_rewards,
-                            episode_spls,
-                            episode_successes,
-                            episode_counts,
-                        ],
-                        1,
-                    )
-                elif args.task.nav_task == "loopnav":
-                    stats = torch.cat(
-                        [
-                            episode_rewards,
-                            episode_stage_1_spls,
-                            episode_stage_2_spls,
-                            episode_spls,
-                            episode_successes,
-                            episode_counts,
-                            episode_stage_1_d_deltas,
-                            episode_stage_2_d_deltas,
-                        ],
-                        1,
-                    )
-                elif args.task.nav_task == "flee":
+                if args.task.nav_task == "flee":
                     stats = torch.cat(
                         [episode_rewards, episode_counts, episode_flee_dist], 1
                     )
@@ -589,21 +459,7 @@ def main():
 
                 dist.all_reduce(stats)
 
-                if args.task.nav_task == "pointnav":
-                    window_episode_reward.append(stats[:, 0])
-                    window_episode_spl.append(stats[:, 1])
-                    window_episode_successes.append(stats[:, 2])
-                    window_episode_counts.append(stats[:, 3])
-                elif args.task.nav_task == "loopnav":
-                    window_episode_reward.append(stats[:, 0])
-                    window_episode_stage_1_spl.append(stats[:, 1])
-                    window_episode_stage_2_spl.append(stats[:, 2])
-                    window_episode_spl.append(stats[:, 3])
-                    window_episode_successes.append(stats[:, 4])
-                    window_episode_counts.append(stats[:, 5])
-                    window_episode_stage_1_d_delta.append(stats[:, 6])
-                    window_episode_stage_2_d_delta.append(stats[:, 7])
-                elif args.task.nav_task == "flee":
+                if args.task.nav_task == "flee":
                     window_episode_reward.append(stats[:, 0])
                     window_episode_counts.append(stats[:, 1])
                     window_episode_flee_dist.append(stats[:, 2])
@@ -616,40 +472,7 @@ def main():
                     window_episode_counts.append(stats[:, 1])
 
                 if tb_enabled:
-                    if args.task.nav_task == "pointnav":
-                        stats = zip(
-                            ["count", "reward", "spl", "success"],
-                            [
-                                window_episode_counts,
-                                window_episode_reward,
-                                window_episode_spl,
-                                window_episode_successes,
-                            ],
-                        )
-                    elif args.task.nav_task == "loopnav":
-                        stats = zip(
-                            [
-                                "count",
-                                "reward",
-                                "stage_1_spl",
-                                "stage_2_spl",
-                                "loopnav_spl",
-                                "success",
-                                "d_delta_s1",
-                                "d_delta_s2",
-                            ],
-                            [
-                                window_episode_counts,
-                                window_episode_reward,
-                                window_episode_stage_1_spl,
-                                window_episode_stage_2_spl,
-                                window_episode_spl,
-                                window_episode_successes,
-                                window_episode_stage_1_d_delta,
-                                window_episode_stage_2_d_delta,
-                            ],
-                        )
-                    elif args.task.nav_task == "flee":
+                    if args.task.nav_task == "flee":
                         stats = zip(
                             ["count", "reward", "flee_dist"],
                             [
@@ -698,29 +521,6 @@ def main():
                         count_steps,
                     )
 
-                    if args.task.nav_task == "pointnav":
-                        writer.add_scalars(
-                            "metrics",
-                            {
-                                k: deltas[k] / deltas["count"]
-                                for k in [key_spl, "success"]
-                            },
-                            count_steps,
-                        )
-                    elif args.task.nav_task == "loopnav":
-                        writer.add_scalars(
-                            "metrics",
-                            {
-                                k: deltas[k] / deltas["count"]
-                                for k in [
-                                    "stage_1_spl",
-                                    "stage_2_spl",
-                                    "loopnav_spl",
-                                    "success",
-                                ]
-                            },
-                            count_steps,
-                        )
                     if args.task.nav_task in {"explore", "flee"}:
                         writer.add_scalars(
                             "metrics",
@@ -756,7 +556,6 @@ def main():
                         output_log_file=output_log_file,
                         checkpoint_folder=checkpoint_folder,
                         tensorboard_dir=tensorboard_dir,
-                        rollout_lens=rollout_lens,
                     )
                     torch.save(checkpoint, STATE_FILE)
 
@@ -800,33 +599,7 @@ def main():
                         window_counts = (
                             window_episode_counts[-1] - window_episode_counts[0]
                         ).sum()
-                        if args.task.nav_task == "pointnav":
-                            window_spl = (
-                                window_episode_spl[-1] - window_episode_spl[0]
-                            ).sum()
-                            window_successes = (
-                                window_episode_successes[-1]
-                                - window_episode_successes[0]
-                            ).sum()
-                        elif args.task.nav_task == "loopnav":
-                            window_stage_1_spl = (
-                                window_episode_stage_1_spl[-1]
-                                - window_episode_stage_1_spl[0]
-                            ).sum()
-                            window_stage_2_spl = (
-                                window_episode_stage_2_spl[-1]
-                                - window_episode_stage_2_spl[0]
-                            ).sum()
-
-                            window_stage_1_d_delta = (
-                                window_episode_stage_1_d_delta[-1]
-                                - window_episode_stage_1_d_delta[0]
-                            ).sum()
-                            window_stage_2_d_delta = (
-                                window_episode_stage_2_d_delta[-1]
-                                - window_episode_stage_2_d_delta[0]
-                            ).sum()
-                        elif args.task.nav_task == "flee":
+                        if args.task.nav_task == "flee":
                             window_flee = (
                                 window_episode_flee_dist[-1]
                                 - window_episode_flee_dist[0]
@@ -839,37 +612,7 @@ def main():
 
                         if window_counts > 0:
 
-                            if args.task.nav_task == "pointnav":
-                                logger.info(
-                                    "Average window size {} reward: {:.3f}\t"
-                                    "{}: {:.3f}\t success: {:.3f}".format(
-                                        len(window_episode_reward),
-                                        (window_rewards / window_counts).item(),
-                                        key_spl,
-                                        (window_spl / window_counts).item(),
-                                        (window_successes / window_counts).item(),
-                                    )
-                                )
-                            elif args.task.nav_task == "loopnav":
-                                logger.info(
-                                    "Average window size {} reward: {:.3f}\t"
-                                    "stage-1 spl: {:.3f}\t"
-                                    "stage-2 spl: {:.3f}\t"
-                                    "stage-1 d_delta: {:.3f}\t"
-                                    "stage-2 d_delta: {:.3f}\t"
-                                    "loop-spl: {:.3f}\t"
-                                    "success: {:.3f}".format(
-                                        len(window_episode_reward),
-                                        (window_rewards / window_counts).item(),
-                                        (window_stage_1_spl / window_counts).item(),
-                                        (window_stage_2_spl / window_counts).item(),
-                                        (window_stage_1_d_delta / window_counts).item(),
-                                        (window_stage_2_d_delta / window_counts).item(),
-                                        (window_spl / window_counts).item(),
-                                        (window_successes / window_counts).item(),
-                                    )
-                                )
-                            elif args.task.nav_task == "flee":
+                            if args.task.nav_task == "flee":
                                 logger.info(
                                     "Average window size {} reward: {:.3f}\tflee-dist: {:.3f}".format(
                                         len(window_episode_reward),

@@ -1,0 +1,5 @@
+task:
+    task_config: tasks/mp3d-gibson-2plus.pointnav.yaml
+
+ddppo:
+    sync_frac: 0.5
