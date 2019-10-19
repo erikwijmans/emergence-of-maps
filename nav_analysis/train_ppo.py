@@ -398,7 +398,7 @@ def construct_envs(args, split="train", one_scene=False, dset_measures=False):
             config_env.TASK.MEASUREMENTS = list(
                 set(
                     config_env.TASK.MEASUREMENTS
-                    + ["EGO_POSE", "GOAL_POSE", "COLLISIONS", "TOP_DOWN_OCCUPANCY_GRID"]
+                    + ["EGO_POSE", "GOAL_POSE", "COLLISIONS", "TOP_DOWN_OCCUPANCY_GRID", "GEO_DISTANCES"]
                 )
             )
 

@@ -1,3 +1,5 @@
+import matplotlib
+
 import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
@@ -16,6 +18,9 @@ from tensorboard.backend.event_processing import (
     plugin_event_multiplexer as event_multiplexer,
 )
 
+matplotlib.rcParams["text.usetex"] = False
+matplotlib.rcParams["backend"] = "pgf"
+
 
 run_name_parser = re.compile(
     r"""
@@ -29,7 +34,7 @@ run_name_parser = re.compile(
     re.VERBOSE,
 )
 
-sns.set(style="whitegrid", font_scale=1.2)
+sns.set(style="whitegrid", font_scale=1.3)
 
 
 def build_parser():
@@ -84,12 +89,12 @@ def create_multiplexer(logdir, run_names):
 def main():
     pretty_type_names = {
         "scratch": r"Scratch",
-        "imagenet-xfer": r"ImageNet",
-        "pointnav-xfer": r"Visual Encoder",
-        "pointnav-ftune": r"Fine-tune",
+        "imagenet-xfer": r"ImageNetEncoder-ScratchPolicy",
+        "pointnav-xfer": r"PointGoalNavEncoder-ScratchPolicy",
+        "pointnav-ftune": r"PointGoalNavEncoder-FinetunePolicy",
         "driver": r"Neural Controller",
         "controller": r"$\nabla$ Neural Controller",
-        "controller-512": r"$\nabla$ Neural Controller",
+        "controller-512": r"$\mathdefault{\nabla}$ Neural Controller",
     }
 
     args = build_parser().parse_args()
@@ -193,21 +198,14 @@ def main():
     }
 
     data = pd.DataFrame.from_dict(data)
-    #  f = plt.figure()
-    #  sns.lineplot(
-    #  x="iter",
-    #  y="metric",
-    #  hue="Method",
-    #  #  style="dset",
-    #  data=data,
-    #  legend="full",
-    #  palette=palette,
-    #  )
     g = (
         sns.relplot(
             x="iter",
             y="metric",
             hue="",
+            style="",
+            markers=True,
+            dashes=False,
             #  style="dset",
             data=data,
             legend="full",
@@ -220,7 +218,9 @@ def main():
         )
         .despine()
         .set_titles("{col_name}")
-        .set_axis_labels("Steps (experience) in millions", "")
+        .set_axis_labels(
+            "Steps (experience) in millions", "Performance (higher is better)"
+        )
         .savefig("data/transfer.pdf".format(task), format="pdf", bbox_inches="tight")
     )
 

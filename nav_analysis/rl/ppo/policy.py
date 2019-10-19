@@ -11,9 +11,11 @@ import torch.nn.functional as F
 import torchvision
 
 import nav_analysis.rl.resnet
+import nav_analysis.rl.efficient_net
 from nav_analysis.rl.layer_norm_lstm import LayerNormLSTM
 from nav_analysis.rl.ppo.utils import CategoricalNet, Flatten
 from nav_analysis.rl.running_mean_and_var import RunningMeanAndVar
+from nav_analysis.rl.dpfrl import DPFRL
 
 
 class Policy(nn.Module):
@@ -152,11 +154,11 @@ class ResNetEncoder(nn.Module):
         ngroups=32,
         spatial_size=128,
         flat_output_size=2048,
-        make_backbone=None,
+        backbone=None,
     ):
         super().__init__()
 
-        self.backbone = make_backbone(input_channels, baseplanes, ngroups)
+        self.backbone = backbone
 
         final_spatial = int(spatial_size * self.backbone.final_spatial_compress)
         bn_size = int(round(flat_output_size / (final_spatial ** 2)))
@@ -202,20 +204,24 @@ class Net(nn.Module):
 
         if "rgb" in observation_space.spaces:
             self._n_input_rgb = observation_space.spaces["rgb"].shape[2]
-            self._n_input_rgb = 3
-            #  self.register_buffer(
-            #  "grayscale_kernel",
-            #  torch.tensor([0.2126, 0.7152, 0.0722], dtype=torch.float32).view(
-            #  1, 3, 1, 1
-            #  ),
-            #  )
-            spatial_size = observation_space.spaces["rgb"].shape[0] // 2
+            if True:
+                self.register_buffer(
+                    "grayscale_kernel",
+                    torch.tensor([0.2126, 0.7152, 0.0722], dtype=torch.float32).view(
+                        1, 3, 1, 1
+                    ),
+                )
+                self._n_input_rgb = 1
+
+            self._sq_size = min(observation_space.spaces["rgb"].shape[0:2])
+            spatial_size = self._sq_size // 2
         else:
             self._n_input_rgb = 0
 
         if "depth" in observation_space.spaces:
             self._n_input_depth = observation_space.spaces["depth"].shape[2]
-            spatial_size = observation_space.spaces["depth"].shape[0] // 2
+            self._sq_size = min(observation_space.spaces["depth"].shape[0:2])
+            spatial_size = self._sq_size // 2
         else:
             self._n_input_depth = 0
 
@@ -254,12 +260,24 @@ class Net(nn.Module):
         rnn_input_size = self._n_input_goal + self._n_prev_action
         if not blind:
             assert self._n_input_depth + self._n_input_rgb > 0
+
+            if "resnet" in backbone:
+                backbone = getattr(nav_analysis.rl.resnet, backbone)(
+                    self._n_input_depth + self._n_input_rgb,
+                    resnet_baseplanes,
+                    resnet_baseplanes // 2,
+                )
+            else:
+                backbone = nav_analysis.rl.efficient_net.EfficientNet.from_name(
+                    self._n_input_depth + self._n_input_rgb, backbone
+                )
+
             encoder = ResNetEncoder(
                 self._n_input_depth + self._n_input_rgb,
                 resnet_baseplanes,
                 resnet_baseplanes // 2,
                 spatial_size,
-                make_backbone=getattr(nav_analysis.rl.resnet, backbone),
+                backbone=backbone,
             )
             self.cnn = nn.Sequential(
                 encoder,
@@ -279,6 +297,8 @@ class Net(nn.Module):
             self.rnn = LayerNormLSTM(
                 rnn_input_size, hidden_size, num_layers=num_recurrent_layers
             )
+        elif rnn_type == "DPFRL":
+            self.rnn = DPFRL(rnn_input_size, hidden_size)
         else:
             self.rnn = getattr(nn, rnn_type)(
                 rnn_input_size, hidden_size, num_layers=num_recurrent_layers
@@ -301,17 +321,20 @@ class Net(nn.Module):
                     nn.Linear(hidden_size // 2, 1),
                 )
         else:
-            self.critic_linear = nn.Linear(hidden_size, 1)
+            self.critic_linear = nn.Linear(self.output_size, 1)
 
         self.layer_init()
         self.train()
 
     @property
     def output_size(self):
-        return self._hidden_size
+        return self._hidden_size * (2 if self._rnn_type == "DPFRL" else 1)
 
     @property
     def num_recurrent_layers(self):
+        if self._rnn_type == "DPFRL":
+            return self.rnn.K
+
         return self._num_recurrent_layers * (2 if "LSTM" in self._rnn_type else 1)
 
     def layer_init(self):
@@ -325,7 +348,7 @@ class Net(nn.Module):
                         nn.init.constant_(layer.bias, val=0)
 
         for name, param in self.rnn.named_parameters():
-            if "weight" in name:
+            if "weight" in name and len(param.size()) >= 2:
                 nn.init.orthogonal_(param)
             elif "bias" in name:
                 nn.init.constant_(param, 0)
@@ -333,7 +356,8 @@ class Net(nn.Module):
         for layer in self.modules():
             if isinstance(layer, nn.Linear):
                 nn.init.orthogonal_(layer.weight, gain=0.01)
-                nn.init.constant_(layer.bias, 0)
+                if layer.bias is not None:
+                    nn.init.constant_(layer.bias, 0)
 
     def _pack_hidden(self, hidden_states):
         if "LSTM" in self._rnn_type:
@@ -358,7 +382,7 @@ class Net(nn.Module):
 
         return hidden_states
 
-    def forward_rnn(self, x, hidden_states, masks):
+    def forward_rnn(self, x, hidden_states, masks, episode_stage):
         if x.size(0) == hidden_states.size(1):
             hidden_states = self._unpack_hidden(hidden_states)
             x, hidden_states = self.rnn(
@@ -373,6 +397,12 @@ class Net(nn.Module):
             # unflatten
             x = x.view(t, n, x.size(1))
             masks = masks.view(t, n)
+            if episode_stage is not None:
+                episode_stage = episode_stage.view(t, n)
+                orig_masks = masks.clone()
+                masks[1:] = (
+                    masks[1:] * (episode_stage[1:] == episode_stage[:-1]).float()
+                )
 
             # steps in sequence which have zero for any agent. Assume t=0 has
             # a zero in it.
@@ -387,6 +417,9 @@ class Net(nn.Module):
             # add t=0 and t=T to the list
             has_zeros = [0] + has_zeros + [t]
 
+            if episode_stage is not None:
+                masks = orig_masks
+
             hidden_states = self._unpack_hidden(hidden_states)
             outputs = []
             for i in range(len(has_zeros) - 1):
@@ -398,6 +431,17 @@ class Net(nn.Module):
                     x[start_idx:end_idx],
                     self._mask_hidden(hidden_states, masks[start_idx].view(1, -1, 1)),
                 )
+
+                if episode_stage is not None and end_idx < t:
+                    hidden_states = self._pack_hidden(hidden_states)
+                    hidden_states = torch.where(
+                        (episode_stage[end_idx] != episode_stage[end_idx - 1]).view(
+                            1, n, 1
+                        ),
+                        hidden_states.detach(),
+                        hidden_states,
+                    )
+                    hidden_states = self._unpack_hidden(hidden_states)
 
                 outputs.append(rnn_scores)
 
@@ -415,6 +459,9 @@ class Net(nn.Module):
             # permute tensor to dimension [BATCH x CHANNEL x HEIGHT X WIDTH]
             rgb_observations = rgb_observations.permute(0, 3, 1, 2)
             rgb_observations = rgb_observations / 255.0  # normalize RGB
+            rgb_observations = (self.grayscale_kernel * rgb_observations).sum(
+                1, keepdim=True
+            )
 
             cnn_input.append(rgb_observations)
 
@@ -441,6 +488,9 @@ class Net(nn.Module):
         cnn_feats = None
         if len(cnn_input) > 0:
             cnn_input = torch.cat(cnn_input, dim=1)
+            cnn_input = F.interpolate(
+                cnn_input, size=(self._sq_size, self._sq_size), mode="area"
+            )
             cnn_input = F.avg_pool2d(cnn_input, 2)
             if self._norm_inputs:
                 cnn_input = self.running_mean_and_var(cnn_input)
@@ -456,7 +506,10 @@ class Net(nn.Module):
             x += [self.stage_embed(observations["episode_stage"].long().squeeze(-1))]
 
         x = torch.cat(x, dim=1)  # concatenate goal vector
-        x, rnn_hidden_states = self.forward_rnn(x, rnn_hidden_states, masks)
+
+        x, rnn_hidden_states = self.forward_rnn(
+            x, rnn_hidden_states, masks, observations.get("episode_stage", None)
+        )
         if self._task == "loopnav":
             if self._two_headed:
                 value = torch.where(

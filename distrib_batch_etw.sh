@@ -26,13 +26,15 @@ CURRENT_DATETIME="`date +%Y_%m_%d_%H_%M_%S`";
 EXP_DIR="${BASE_EXP_DIR}/exp_habitat_api_navigation_analysis_datetime_${CURRENT_DATETIME}"
 mkdir -p ${EXP_DIR}
 ENV_NAME="gibson-challenge-mp3d-gibson-se-neXt25-depth"
-ENV_NAME="gibson-all-se-neXt25-depth"
-ENV_NAME="mp3d-gibson-2plus-se-resneXt50-long-rgb"
+ENV_NAME="gibson-2plus-resnet50-dpfrl-depth"
+# ENV_NAME="mp3d-gibson-all-loopnav-stop-grad"
 # ENV_NAME="gibson-public-50-single-GPU-depth"
 # ENV_NAME="gibson-2plus-se-neXt101-lstm1024-long-depth"
 # ENV_NAME="mp3d-gibson-all-loopnav-noreturn-baseline-blind"
 # ENV_NAME="mp3d-gibson-50-online-long-depth"
 # ENV_NAME="gibson-public-flee-pointnav-ftune-rgb-r${SLURM_ARRAY_TASK_ID}"
+ENV_NAME="mp3d-gibson-2plus-resnet50-lstm512-speedmaster-16-by-9-hfov-70-grayscale"
+ENV_NAME="gibson-2plus-efficientnet-b1-depth"
 # ENV_NAME="testing"
 CHECKPOINT="data/checkpoints/${ENV_NAME}"
 
@@ -51,10 +53,12 @@ printenv | grep SLURM
 set -x
 srun python -u -m nav_analysis.train_ppo_distrib \
     --extra-confs \
-    nav_analysis/configs/experiments/pointnav-rgb/se-resneXt50-rgb.yaml \
-    nav_analysis/configs/experiments/mp3d-gibson-2plus.pointnav.yaml \
+    nav_analysis/configs/experiments/gibson-2plus.pointnav.yaml \
     --opts \
     "logging.log_file=${EXP_DIR}/log.txt" \
     "logging.checkpoint_folder=${CHECKPOINT}" \
-    "logging.tensorboard_dir=runs/${ENV_NAME}"
+    "logging.tensorboard_dir=runs/${ENV_NAME}" \
+    "model.backbone=efficientnet-b1"
+    # nav_analysis/configs/experiments/mp3d-gibson-2plus.speedmaster.pointnav.yaml \
+    # nav_analysis/configs/experiments/pointnav-rgb/resnet50-rgb.yaml \
 

@@ -5,6 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 from distutils.version import StrictVersion
+import math
 
 import numpy as np
 import torch
@@ -13,6 +14,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from apex import amp
+from nav_analysis.rl.ppo.lamb import Lamb
 
 EPS_PPO = 1e-3
 

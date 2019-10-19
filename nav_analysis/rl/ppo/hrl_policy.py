@@ -125,9 +125,11 @@ def update_ego_motion(
     for t in range(T):
         r = prev_pg[:, 0:1]
         xy = r * prev_pg[:, 1:]
+        xy = torch.stack([xy[:, 1], -xy[:, 0]], -1)
         xy = torch.baddbmm(
             ego[t, :, :, 2:], ego[t, :, :, 0:2], xy.unsqueeze(-1)
         ).squeeze(-1)
+        xy = torch.stack([-xy[:, 1], xy[:, 0]], -1)
 
         r = torch.norm(xy, p=2, dim=-1, keepdim=True)
         xy = xy / r

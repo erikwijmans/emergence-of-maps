@@ -142,7 +142,10 @@ def main():
                                     collision=int(
                                         infos[i]["collisions"]["is_collision"]
                                     ),
-                                    positions=infos[i]["ego_pose"].copy(),
+                                    positions=infos[i]["ego_pose"][0].copy(),
+                                    rotations=infos[i]["ego_pose"][1].copy(),
+                                    d_goal=infos[i]["geo_distances"]["dist_to_goal"],
+                                    d_start=infos[i]["geo_distances"]["dist_to_start"],
                                 )
                             )
                         else:
@@ -186,7 +189,8 @@ def main():
 
                             trajectories[i] = []
 
-                    current_episodes = envs.current_episodes()
+                            current_episodes[i] = envs.current_episodes()[i]
+
                     outputs = envs.step([a[0].item() for a in actions])
 
                     prev_infos = infos

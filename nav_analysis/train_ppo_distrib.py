@@ -283,11 +283,15 @@ def main():
             window_episode_spl = deque(maxlen=args.logging.reward_window_size)
             window_episode_successes = deque(maxlen=args.logging.reward_window_size)
         elif args.task.nav_task == "loopnav":
+            episode_successes = torch.zeros(envs.num_envs, 1).to(device)
+            episode_spls = torch.zeros(envs.num_envs, 1).to(device)
             episode_stage_1_spls = torch.zeros(envs.num_envs, 1).to(device)
             episode_stage_2_spls = torch.zeros(envs.num_envs, 1).to(device)
             episode_stage_1_d_deltas = torch.zeros(envs.num_envs, 1).to(device)
             episode_stage_2_d_deltas = torch.zeros(envs.num_envs, 1).to(device)
 
+            window_episode_spl = deque(maxlen=args.logging.reward_window_size)
+            window_episode_successes = deque(maxlen=args.logging.reward_window_size)
             window_episode_stage_1_spl = deque(maxlen=args.logging.reward_window_size)
             window_episode_stage_2_spl = deque(maxlen=args.logging.reward_window_size)
             window_episode_stage_1_d_delta = deque(
@@ -499,14 +503,15 @@ def main():
                 dist.all_reduce(t_sync)
                 sync_time += t_sync.item() / world_size
 
-                rollout_length = list(
-                    torch.full((WORLD_SIZE, 1), rollouts.step, device=device).unbind(0)
-                )
-                dist.all_gather(
-                    rollout_length, torch.full((1,), rollouts.step, device=device)
-                )
-                rollout_length = torch.cat(rollout_length, 0)
-                rollout_lens.append(rollout_length.cpu().byte())
+                #  rollout_length = list(
+                #  torch.full((world_size, 1), rollouts.step, device=device).unbind(0)
+                #  )
+                #  dist.all_gather(
+                #  rollout_length, torch.full((1,), rollouts.step, device=device)
+                #  )
+                #  rollout_length = torch.cat(rollout_length, 0)
+                #  rollout_lens.append(rollout_length.cpu().byte())
+                #  rollout_lens = []
 
                 step_delta = torch.full_like(count_steps, rollouts.step * envs.num_envs)
                 dist.all_reduce(step_delta)
@@ -809,6 +814,13 @@ def main():
                                 - window_episode_successes[0]
                             ).sum()
                         elif args.task.nav_task == "loopnav":
+                            window_spl = (
+                                window_episode_spl[-1] - window_episode_spl[0]
+                            ).sum()
+                            window_successes = (
+                                window_episode_successes[-1]
+                                - window_episode_successes[0]
+                            ).sum()
                             window_stage_1_spl = (
                                 window_episode_stage_1_spl[-1]
                                 - window_episode_stage_1_spl[0]

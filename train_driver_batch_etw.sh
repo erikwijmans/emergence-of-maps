@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task 10
 #SBATCH --ntasks-per-node 8
 #SBATCH --mem-per-cpu=5625MB
-#SBATCH --partition=learnfair
+#SBATCH --partition=learnfair,scavenge
 #SBATCH --time=24:00:00
 #SBATCH --signal=USR1@600
 #SBATCH --open-mode=append

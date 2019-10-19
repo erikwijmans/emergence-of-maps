@@ -241,7 +241,7 @@ def main():
     if args.video == 1:
         assert args.out_dir_video is not None, "Video dir not specified"
 
-    prev_ckpt_ind = 152
+    prev_ckpt_ind = -1
 
     with SummaryWriter(log_dir=args.tensorboard_dir) as tb_writer:
 
