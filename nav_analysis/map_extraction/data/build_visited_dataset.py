@@ -19,9 +19,7 @@ msgpack_numpy.patch()
 
 
 def _build_dset(_env, T=5000):
-    returns = dict(
-        xs=[], maps=[], occupancy_grids=[], d_goal=[], d_start=[]
-    )
+    returns = dict(xs=[], maps=[], occupancy_grids=[], d_goal=[], d_start=[])
     samples_per = 30
     _len = _env.stat()["entries"]
     episode_lens = []

@@ -12,6 +12,7 @@ import numpy as np
 import omegaconf
 import torch
 import torch.nn as nn
+from habitat.sims.habitat_simulator import SimulatorActions
 
 import nav_analysis
 
@@ -39,7 +40,7 @@ class CustomFixedCategorical(torch.distributions.Categorical):
 
 
 class CategoricalNet(nn.Module):
-    def __init__(self, num_inputs, num_outputs, task="pointnav", two_headed=False):
+    def __init__(self, num_inputs, num_outputs, task):
         super().__init__()
 
         if task == "loopnav":
@@ -48,15 +49,6 @@ class CategoricalNet(nn.Module):
                 nn.ReLU(True),
                 nn.Linear(num_inputs // 2, num_outputs),
             )
-            if two_headed:
-                self.backward_actor = nn.Sequential(
-                    nn.Linear(num_inputs, num_inputs // 2),
-                    nn.ReLU(True),
-                    nn.Linear(num_inputs // 2, num_inputs // 2),
-                    nn.ReLU(True),
-                    nn.Linear(num_inputs // 2, num_outputs),
-                )
-            self._two_headed = two_headed
         else:
             self.linear = nn.Linear(num_inputs, num_outputs)
 
@@ -69,14 +61,7 @@ class CategoricalNet(nn.Module):
 
     def forward(self, x, obs):
         if self._task == "loopnav":
-            if self._two_headed:
-                logits = torch.where(
-                    obs["episode_stage"].view(-1, 1) == 1,
-                    self.backward_actor(x),
-                    self.forward_actor(x),
-                )
-            else:
-                logits = self.forward_actor(x)
+            logits = self.forward_actor(x)
         else:
             logits = self.linear(x)
 
@@ -189,16 +174,23 @@ class RolloutStorage:
     def compute_returns(self, next_value, use_gae, gamma, tau):
         max_ent_coeff = 0.0
         if use_gae:
+            not_stop_mask = (self.prev_actions != SimulatorActions.STOP.value).float()
             self.value_preds[self.step] = next_value
             gae = 0
             for step in reversed(range(self.step)):
                 delta = (
                     self.rewards[step]
                     + max_ent_coeff * self.entropy[step]
-                    + gamma * self.value_preds[step + 1] * self.masks[step + 1]
+                    + gamma
+                    * self.value_preds[step + 1]
+                    * self.masks[step + 1]
+                    * not_stop_mask[step + 1]
                     - self.value_preds[step]
                 )
-                gae = delta + gamma * tau * self.masks[step + 1] * gae
+                gae = (
+                    delta
+                    + gamma * tau * self.masks[step + 1] * not_stop_mask[step + 1] * gae
+                )
                 self.returns[step] = gae + self.value_preds[step]
         else:
             self.returns[self.step] = next_value

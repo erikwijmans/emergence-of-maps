@@ -235,6 +235,7 @@ class LoopNavRLEnv(NavRLEnv):
 
     def get_reward(self, observations):
         reward = self._config_baseline.BASELINE.RL.SLACK_REWARD
+        reward = 0
 
         current_target_distance = self._distance_target()
 
@@ -244,7 +245,7 @@ class LoopNavRLEnv(NavRLEnv):
             logger.info("Infinite geodesic distance observed in get_reward")
             return 0.0
 
-        reward += 2.5 * (
+        reward += 5.0 * (
             (self._previous_target_distance - current_target_distance)
             * (2.0 if self._episode_stage == 1 else 1.0)
             / self._env.current_episode.info["geodesic_distance"]
@@ -398,7 +399,13 @@ def construct_envs(args, split="train", one_scene=False, dset_measures=False):
             config_env.TASK.MEASUREMENTS = list(
                 set(
                     config_env.TASK.MEASUREMENTS
-                    + ["EGO_POSE", "GOAL_POSE", "COLLISIONS", "TOP_DOWN_OCCUPANCY_GRID", "GEO_DISTANCES"]
+                    + [
+                        "EGO_POSE",
+                        "GOAL_POSE",
+                        "COLLISIONS",
+                        "TOP_DOWN_OCCUPANCY_GRID",
+                        "GEO_DISTANCES",
+                    ]
                 )
             )
 

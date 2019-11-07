@@ -157,9 +157,7 @@ def images_to_video(images, output_dir, video_name):
     for im in tqdm.tqdm(images):
         writer.append_data(im)
     writer.close()
-    print(
-        "Generated video: {}".format(str(os.path.join(output_dir, video_name)))
-    )
+    print("Generated video: {}".format(str(os.path.join(output_dir, video_name))))
 
 
 def basename(path):
@@ -183,9 +181,7 @@ def calc_metrics(episode_metrics):
             for item in path:
                 value = value[item]
             # print(metric, ": ", value)
-            aggregated_metrics[metric] = (
-                aggregated_metrics.get(metric, 0) + value
-            )
+            aggregated_metrics[metric] = aggregated_metrics.get(metric, 0) + value
             # print(metric, aggregated_metrics[metric])
 
     for metric in metrics.keys():
@@ -272,9 +268,7 @@ def main():
         default="SPARSE",
         choices=["DENSE", "SPARSE"],
     )
-    parser.add_argument(
-        "--rnn-type", type=str, default="GRU", choices=["GRU", "LSTM"]
-    )
+    parser.add_argument("--rnn-type", type=str, default="GRU", choices=["GRU", "LSTM"])
     parser.add_argument("--noise-truncate", type=float, default=0.0)
     args = parser.parse_args()
     if args.blind:
@@ -299,9 +293,7 @@ def main():
 
         config_env.SIMULATOR.HABITAT_SIM_V0.COMPRESS_TEXTURES = False
 
-        config_env.TASK.POINTGOAL_SENSOR.SENSOR_TYPE = (
-            args.pointgoal_sensor_type
-        )
+        config_env.TASK.POINTGOAL_SENSOR.SENSOR_TYPE = args.pointgoal_sensor_type
         config_env.TASK.POINTGOAL_SENSOR.SENSOR_DIMENSIONS = (
             args.pointgoal_sensor_dimensions
         )
@@ -310,16 +302,10 @@ def main():
             agent_sensors.append("RGB_SENSOR")
         config_env.SIMULATOR.AGENT_0.SENSORS = agent_sensors
         print(
-            "config_env.SIMULATOR.AGENT_0.SENSORS",
-            config_env.SIMULATOR.AGENT_0.SENSORS,
+            "config_env.SIMULATOR.AGENT_0.SENSORS", config_env.SIMULATOR.AGENT_0.SENSORS
         )
         if args.record_video:
-            config_env.TASK.MEASUREMENTS = [
-                "SPL",
-                "EPISODE_INFO",
-                "POSE",
-                "BACKTRACKS",
-            ]
+            config_env.TASK.MEASUREMENTS = ["SPL", "EPISODE_INFO", "POSE", "BACKTRACKS"]
             config_env.SIMULATOR.RGB_SENSOR.WIDTH = 1024
             config_env.SIMULATOR.RGB_SENSOR.HEIGHT = 1024
             config_env.SIMULATOR.DEPTH_SENSOR.WIDTH = 1024
@@ -337,9 +323,7 @@ def main():
     dummy_dataset = PointNavDatasetV1(env_configs[0].DATASET)
 
     if len(dummy_dataset.episodes) > args.count_test_episodes:
-        dummy_dataset.episodes = dummy_dataset.episodes[
-            : args.count_test_episodes
-        ]
+        dummy_dataset.episodes = dummy_dataset.episodes[: args.count_test_episodes]
     assert len(baseline_configs) > 0, "empty list of datasets"
 
     envs = habitat.VectorEnv(
@@ -389,9 +373,7 @@ def main():
         max_grad_norm=0.5,
     )
 
-    ppo.load_state_dict(
-        {k: v for k, v in ckpt["state_dict"].items() if "ddp" not in k}
-    )
+    ppo.load_state_dict({k: v for k, v in ckpt["state_dict"].items() if "ddp" not in k})
 
     actor_critic = ppo.actor_critic
     actor_critic.eval()
@@ -414,9 +396,7 @@ def main():
         device=device,
     )
     not_done_masks = torch.zeros(args.num_processes, 1, device=device)
-    prev_actions = torch.zeros(
-        args.num_processes, 1, device=device, dtype=torch.int64
-    )
+    prev_actions = torch.zeros(args.num_processes, 1, device=device, dtype=torch.int64)
 
     if not args.record_video:
 
@@ -429,10 +409,7 @@ def main():
                         zip(
                             env_configs,
                             baseline_configs,
-                            [
-                                args.shuffle_interval
-                                for _ in range(args.num_processes)
-                            ],
+                            [args.shuffle_interval for _ in range(args.num_processes)],
                             range(args.num_processes),
                         )
                     )
@@ -446,9 +423,7 @@ def main():
             episode_spls = torch.zeros(envs.num_envs, 1, device=device)
             episode_success = torch.zeros(envs.num_envs, 1, device=device)
             episode_counts = torch.zeros(envs.num_envs, 1, device=device)
-            current_episode_reward = torch.zeros(
-                envs.num_envs, 1, device=device
-            )
+            current_episode_reward = torch.zeros(envs.num_envs, 1, device=device)
 
             test_recurrent_hidden_states = torch.zeros(
                 actor_critic.net.num_recurrent_layers,
@@ -464,9 +439,7 @@ def main():
             episode_step_counts = torch.zeros(envs.num_envs, 1, device=device)
             done_spls = []
 
-            with tqdm.tqdm(
-                total=args.count_test_episodes * envs.num_envs
-            ) as pbar:
+            with tqdm.tqdm(total=args.count_test_episodes * envs.num_envs) as pbar:
                 while (
                     episode_counts < args.count_test_episodes
                 ).float().sum().item() > 0:
@@ -484,9 +457,7 @@ def main():
 
                     outputs = envs.step([a[0].item() for a in actions])
 
-                    episode_step_counts *= (
-                        ~(episode_step_counts == mem_len)
-                    ).float()
+                    episode_step_counts *= (~(episode_step_counts == mem_len)).float()
                     episode_step_counts += 1
 
                     observations, rewards, dones, infos = [
@@ -526,8 +497,7 @@ def main():
                             pbar.set_postfix(
                                 dict(
                                     spl=(
-                                        episode_spls.sum()
-                                        / episode_counts.sum()
+                                        episode_spls.sum() / episode_counts.sum()
                                     ).item()
                                 ),
                                 refresh=True,
@@ -536,18 +506,12 @@ def main():
                     current_episode_reward *= not_done_masks
                     episode_step_counts *= not_done_masks
 
-            episode_reward_mean = (
-                (episode_rewards / episode_counts).mean().item()
-            )
+            episode_reward_mean = (episode_rewards / episode_counts).mean().item()
             episode_spl_mean = (episode_spls / episode_counts).mean().item()
-            episode_success_mean = (
-                (episode_success / episode_counts).mean().item()
-            )
+            episode_success_mean = (episode_success / episode_counts).mean().item()
 
             print("Average episode reward: {:.6f}".format(episode_reward_mean))
-            print(
-                "Average episode success: {:.6f}".format(episode_success_mean)
-            )
+            print("Average episode success: {:.6f}".format(episode_success_mean))
             print("Average episode spl: {:.6f}".format(episode_spl_mean))
 
             spl_by_mem_lengths[str(mem_len)] = done_spls
@@ -563,10 +527,7 @@ def main():
             os.makedirs(output_dir)
         episode_metrics = {}
         pbar = tqdm.tqdm(total=len(dummy_dataset.episodes))
-        print(
-            "UNIQUE EPISODES ID: ",
-            {ep.episode_id for ep in dummy_dataset.episodes},
-        )
+        print("UNIQUE EPISODES ID: ", {ep.episode_id for ep in dummy_dataset.episodes})
         while episode_counts.sum() < len(dummy_dataset.episodes):
             with torch.no_grad():
                 batch["depth"] = F.avg_pool2d(
@@ -584,9 +545,7 @@ def main():
 
                 outputs = envs.step([a[0].item() for a in actions])
 
-                observations, rewards, dones, infos = [
-                    list(x) for x in zip(*outputs)
-                ]
+                observations, rewards, dones, infos = [list(x) for x in zip(*outputs)]
                 batch = batch_obs(observations)
                 for sensor in batch:
                     batch[sensor] = batch[sensor].to(device)
@@ -622,9 +581,7 @@ def main():
                                     "geodesic_distance"
                                 ],
                                 bts=len(backtracks),
-                                kmax=max(
-                                    bt[1] - bt[0] + 1 for bt in backtracks
-                                )
+                                kmax=max(bt[1] - bt[0] + 1 for bt in backtracks)
                                 if len(backtracks) > 0
                                 else 0,
                             ),
@@ -644,10 +601,7 @@ def main():
                         # rgb_frames[i].append(
                         #   observations[i]["rgb"][:, :, :3]
                         # )
-                        if (
-                            "pose" in infos[i]
-                            and infos[i]["pose"]["is_collision"]
-                        ):
+                        if "pose" in infos[i] and infos[i]["pose"]["is_collision"]:
                             # frame[0:20, :size]= [255, 0, 0]
                             frame[:, 1024:] = [0, 0, 0]
 
@@ -656,8 +610,7 @@ def main():
                             mask = mask == 1
                             alpha = 0.5
                             frame[mask] = (
-                                alpha * np.array([255, 0, 0])
-                                + (1.0 - alpha) * frame
+                                alpha * np.array([255, 0, 0]) + (1.0 - alpha) * frame
                             )[mask]
                         agent_position = infos[i]["pose"]["position"]
                         agent_rotation = -quaternion_to_euler(
@@ -702,9 +655,9 @@ def main():
                         frame[: map.shape[0], 1024 : 1024 + map.shape[1]] = map
                         rgb_frames[i].append(frame)
 
-            rewards = torch.tensor(
-                rewards, dtype=torch.float, device=device
-            ).unsqueeze(1)
+            rewards = torch.tensor(rewards, dtype=torch.float, device=device).unsqueeze(
+                1
+            )
             current_episode_reward += rewards
             episode_rewards += (1 - not_done_masks) * current_episode_reward
             episode_counts += 1 - not_done_masks

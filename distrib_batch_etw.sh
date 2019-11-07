@@ -3,15 +3,15 @@
 #SBATCH --output=/checkpoint/%u/jobs/job.%j.out
 #SBATCH --error=/checkpoint/%u/jobs/job.%j.err
 #SBATCH --gres=gpu:8
-#SBATCH --nodes 8
+#SBATCH --nodes 4
 #SBATCH --cpus-per-task 10
 #SBATCH --ntasks-per-node 8
 #SBATCH --mem-per-cpu=5625MB
 #SBATCH --partition=learnfair
 #SBATCH --time=72:00:00
-#SBATCH --signal=USR1@600
+#SBATCH --signal=USR1@60
 #SBATCH --open-mode=append
-#SBATCH --constraint=volta32gb
+echo "#SBATCH --constraint=volta32gb"
 
 echo ${PYTHONPATH}
 
@@ -34,7 +34,8 @@ ENV_NAME="gibson-2plus-resnet50-dpfrl-depth"
 # ENV_NAME="mp3d-gibson-50-online-long-depth"
 # ENV_NAME="gibson-public-flee-pointnav-ftune-rgb-r${SLURM_ARRAY_TASK_ID}"
 ENV_NAME="mp3d-gibson-2plus-resnet50-lstm512-speedmaster-16-by-9-hfov-70-grayscale"
-ENV_NAME="gibson-2plus-efficientnet-b1-depth"
+ENV_NAME="gibson-2plus-resnet18-depth"
+# ENV_NAME="mp3d-gibson-all-loopnav-stop-grad-v2-blind"
 # ENV_NAME="testing"
 CHECKPOINT="data/checkpoints/${ENV_NAME}"
 
@@ -53,12 +54,12 @@ printenv | grep SLURM
 set -x
 srun python -u -m nav_analysis.train_ppo_distrib \
     --extra-confs \
+    nav_analysis/configs/experiments/models/resnet-18.yaml \
     nav_analysis/configs/experiments/gibson-2plus.pointnav.yaml \
     --opts \
     "logging.log_file=${EXP_DIR}/log.txt" \
     "logging.checkpoint_folder=${CHECKPOINT}" \
-    "logging.tensorboard_dir=runs/${ENV_NAME}" \
-    "model.backbone=efficientnet-b1"
+    "logging.tensorboard_dir=runs/${ENV_NAME}"
     # nav_analysis/configs/experiments/mp3d-gibson-2plus.speedmaster.pointnav.yaml \
     # nav_analysis/configs/experiments/pointnav-rgb/resnet50-rgb.yaml \
 

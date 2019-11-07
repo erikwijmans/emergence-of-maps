@@ -378,7 +378,11 @@ def main():
                         device=device,
                     )
 
-                    current_episode_reward += rewards
+                    current_episode_reward += args.ppo.gamma * rewards
+                    agent.reward_whitten.update(current_episode_reward)
+                    rewards = rewards / agent.reward_whitten.stdev
+                    rewards = torch.clamp(rewards, -5.0, 5.0)
+
                     episode_rewards += (1.0 - masks) * current_episode_reward
                     episode_counts += 1.0 - masks
                     current_episode_reward *= masks
@@ -541,6 +545,7 @@ def main():
                     actor_critic.net.running_mean_and_var.eval()
 
                 value_loss, action_loss, dist_entropy = agent.update(rollouts)
+                agent.reward_whitten.sync()
 
                 losses = torch.tensor(
                     [value_loss, action_loss, dist_entropy],

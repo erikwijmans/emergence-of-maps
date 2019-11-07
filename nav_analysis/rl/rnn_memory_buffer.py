@@ -7,10 +7,7 @@ from nav_analysis.rl.ppo.policy import Policy
 
 class RNNMemoryBuffer(object):
     def __init__(
-        self,
-        actor_critic: Policy,
-        num_processes: int,
-        memory_length: int = None,
+        self, actor_critic: Policy, num_processes: int, memory_length: int = None
     ):
         self.actor_critic = actor_critic
         self.memory_length = memory_length
@@ -19,8 +16,7 @@ class RNNMemoryBuffer(object):
 
         if self.active:
             self.input_buffers = [
-                collections.deque(maxlen=memory_length)
-                for _ in range(num_processes)
+                collections.deque(maxlen=memory_length) for _ in range(num_processes)
             ]
 
     def add(self, observations, prev_actions, masks, gt_hidden):
@@ -30,16 +26,10 @@ class RNNMemoryBuffer(object):
 
         for i in range(self.num_processes):
             if masks[i] == 0.0:
-                self.input_buffers[i] = collections.deque(
-                    maxlen=self.memory_length
-                )
+                self.input_buffers[i] = collections.deque(maxlen=self.memory_length)
 
             self.input_buffers[i].append(
-                (
-                    {k: v[i] for k, v in observations.items()},
-                    prev_actions[i],
-                    masks[i],
-                )
+                ({k: v[i] for k, v in observations.items()}, prev_actions[i], masks[i])
             )
 
     def get_hidden_states(self):

@@ -23,11 +23,7 @@ from torch.utils import tensorboard
 
 from habitat import logger
 from nav_analysis.rl.ppo import PPO, Policy, RolloutStorage
-from nav_analysis.rl.ppo.utils import (
-    batch_obs,
-    ppo_args,
-    update_linear_schedule,
-)
+from nav_analysis.rl.ppo.utils import batch_obs, ppo_args, update_linear_schedule
 from nav_analysis.train_ppo import construct_envs
 
 torch.backends.cudnn.enabled = True
@@ -125,10 +121,7 @@ def main(args, is_done_store):
 
             if args.ppo.use_linear_lr_decay:
                 update_linear_schedule(
-                    agent.optimizer,
-                    update,
-                    args.ppo.num_updates,
-                    args.optimizer.lr,
+                    agent.optimizer, update, args.ppo.num_updates, args.optimizer.lr
                 )
 
             if args.ppo.use_linear_clip_decay:
@@ -145,8 +138,7 @@ def main(args, is_done_store):
                 if args.general.backprop:
                     with torch.no_grad():
                         step_observation = {
-                            k: v[step]
-                            for k, v in rollouts.observations.items()
+                            k: v[step] for k, v in rollouts.observations.items()
                         }
 
                         (
@@ -162,27 +154,21 @@ def main(args, is_done_store):
                             rollouts.masks[step],
                         )
                 else:
-                    actions = torch.randint_like(
-                        rollouts.prev_actions[step], 0, 4
-                    )
+                    actions = torch.randint_like(rollouts.prev_actions[step], 0, 4)
 
                 pth_time += time() - t_sample_action
 
                 t_step_env = time()
 
                 outputs = envs.step([a[0].item() for a in actions])
-                observations, rewards, dones, infos = [
-                    list(x) for x in zip(*outputs)
-                ]
+                observations, rewards, dones, infos = [list(x) for x in zip(*outputs)]
 
                 env_time += time() - t_step_env
 
                 if args.general.backprop:
                     t_update_stats = time()
                     batch = batch_obs(observations)
-                    rewards = torch.tensor(
-                        rewards, dtype=torch.float, device=device
-                    )
+                    rewards = torch.tensor(rewards, dtype=torch.float, device=device)
                     rewards = rewards.unsqueeze(1)
 
                     masks = torch.ones(
@@ -220,9 +206,7 @@ def main(args, is_done_store):
             dist.all_reduce(t_sync)
             sync_time += t_sync.item() / world_size
 
-            step_delta = torch.full_like(
-                count_steps, (step + 1) * envs.num_envs
-            )
+            step_delta = torch.full_like(count_steps, (step + 1) * envs.num_envs)
             dist.all_reduce(step_delta)
             count_steps += step_delta
 
@@ -231,8 +215,7 @@ def main(args, is_done_store):
             if args.general.backprop:
                 with torch.no_grad():
                     last_observation = {
-                        k: v[rollouts.step]
-                        for k, v in rollouts.observations.items()
+                        k: v[rollouts.step] for k, v in rollouts.observations.items()
                     }
                     next_value = actor_critic.get_value(
                         last_observation,

@@ -254,7 +254,7 @@ class GeoModel(nn.Module):
     def forward(self, x):
         geo_feats = self.geo_shared(x)
 
-        return self.d_start(geo_feats).squeeze(-1), self.d_goal(geo_feats).squeeze(-1)
+        return (self.d_start(geo_feats).squeeze(-1), self.d_goal(geo_feats).squeeze(-1))
 
 
 class Model(nn.Module):
@@ -601,7 +601,9 @@ def eval_epoch(model, loader, writer, step):
 
     best_eval_acc = total_acc
 
-    torch.save(model.module.state_dict(), "data/best_future_visited_predictor_with_grad.pt")
+    torch.save(
+        model.module.state_dict(), "data/best_future_visited_predictor_with_grad.pt"
+    )
 
 
 def softmax_classifier():

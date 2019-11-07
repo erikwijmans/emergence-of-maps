@@ -38,7 +38,6 @@ def main():
     trained_args.ppo.num_processes = args.num_processes
     trained_args.general.sim_gpu_id = args.gpu_id
 
-
     trained_args.general.video = False
     trained_args.task.shuffle_interval = int(1e3)
 

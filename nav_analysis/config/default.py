@@ -29,9 +29,7 @@ _C.BASELINE.RL.SLACK_REWARD = -0.01
 # -----------------------------------------------------------------------------
 
 
-def cfg(
-    config_file: Optional[str] = None, config_dir: str = DEFAULT_CONFIG_DIR
-) -> CN:
+def cfg(config_file: Optional[str] = None, config_dir: str = DEFAULT_CONFIG_DIR) -> CN:
     config = _C.clone()
     if config_file:
         config.merge_from_file(os.path.join(config_dir, config_file))

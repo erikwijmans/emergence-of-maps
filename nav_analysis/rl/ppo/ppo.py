@@ -15,6 +15,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 from apex import amp
 from nav_analysis.rl.ppo.lamb import Lamb
+from nav_analysis.rl.running_mean_and_var import RunningMeanAndVar
 
 EPS_PPO = 1e-3
 
@@ -64,6 +65,11 @@ class PPO(nn.Module):
         self.actor_critic, self.optimizer = amp.initialize(
             self.actor_critic, self.optimizer, opt_level="O1", enabled=fp16
         )
+
+        self.reward_whitten = RunningMeanAndVar(
+            shape=(1,), use_distrib=False, always_training=True
+        )
+        self.reward_whitten.to(self.device)
 
     def init_distributed(self, group=None):
         class Gaurd(object):

@@ -28,7 +28,7 @@ optimizer:
     eps: 1.0e-5
 
 ppo:
-    clip_param: 0.1
+    clip_param: 0.2
 
     value_loss_coef: 0.5
     entropy_coef: 0.01
@@ -43,7 +43,7 @@ ppo:
 
     num_processes: 4
     num_steps: 128
-    ppo_epoch: 2
+    ppo_epoch: 4
     num_mini_batch: 2
     num_updates: 150000
 
