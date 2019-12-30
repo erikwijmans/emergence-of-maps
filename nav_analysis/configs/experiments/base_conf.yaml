@@ -20,6 +20,7 @@ model:
 
     blind: False
     two_headed: False
+    double_agent: False
 
 optimizer:
     lr: 2.5e-4
@@ -43,7 +44,7 @@ ppo:
 
     num_processes: 4
     num_steps: 128
-    ppo_epoch: 4
+    ppo_epoch: 2
     num_mini_batch: 2
     num_updates: 150000
 
@@ -74,3 +75,10 @@ task:
     shuffle_interval: 50000
 
     loopnav_give_return_inputs: True
+
+    training_stage: -1
+
+
+stage_2_args:
+    stage_1_model: ???
+    state_type: trained

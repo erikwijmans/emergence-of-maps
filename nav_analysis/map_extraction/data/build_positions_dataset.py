@@ -1,16 +1,15 @@
 import argparse
+import os.path as osp
 import random
 
+import cv2
+import lmdb
+import msgpack
+import msgpack_numpy
 import numpy as np
 import torch
 import tqdm
 from pydash import py_
-import msgpack
-import msgpack_numpy
-import lmdb
-import os.path as osp
-import cv2
-
 
 from nav_analysis.rl.ppo.policy import Policy
 from nav_analysis.rl.ppo.utils import batch_obs

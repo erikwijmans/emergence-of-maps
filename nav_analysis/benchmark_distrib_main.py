@@ -1,26 +1,31 @@
-import logging
 import atexit
 import collections
-import json
-import random
-import socket
-import sys
-import shlex
-import subprocess
 import copy
+import json
+import logging
 import os
-import numpy as np
-from pydash import py_
-from habitat import logger
-from nav_analysis.rl.ppo.utils import batch_obs, ppo_args, update_linear_schedule
-from nav_analysis.benchmark_distrib_work import main as work_main
-import threading
 import os.path as osp
+import random
+import shlex
 import signal
+import socket
+import subprocess
+import sys
+import threading
 
-import tqdm
+import numpy as np
 import torch
 import torch.distributed as dist
+import tqdm
+from pydash import py_
+
+from habitat import logger
+from nav_analysis.benchmark_distrib_work import main as work_main
+from nav_analysis.rl.ppo.utils import (
+    batch_obs,
+    ppo_args,
+    update_linear_schedule,
+)
 
 logger.handlers[-1].setLevel(level=logging.WARNING)
 

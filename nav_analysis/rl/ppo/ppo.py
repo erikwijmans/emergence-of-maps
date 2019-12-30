@@ -4,8 +4,8 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-from distutils.version import StrictVersion
 import math
+from distutils.version import StrictVersion
 
 import numpy as np
 import torch
@@ -14,6 +14,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from apex import amp
+
 from nav_analysis.rl.ppo.lamb import Lamb
 from nav_analysis.rl.running_mean_and_var import RunningMeanAndVar
 
@@ -36,6 +37,7 @@ class PPO(nn.Module):
         normalized_advantage=False,
         fp16=False,
         weight_decay=0.0,
+        optimizer=None,
     ):
 
         super().__init__()
@@ -52,23 +54,23 @@ class PPO(nn.Module):
         self.max_grad_norm = max_grad_norm
         self.use_clipped_value_loss = use_clipped_value_loss
 
-        self.optimizer = optim.Adam(
-            list(filter(lambda param: param.requires_grad, actor_critic.parameters())),
-            lr=lr,
-            eps=eps,
-            weight_decay=weight_decay,
+        self.optimizer = (
+            optim.Adam(
+                list(
+                    filter(lambda param: param.requires_grad, actor_critic.parameters())
+                ),
+                lr=lr,
+                eps=eps,
+                weight_decay=weight_decay,
+            )
+            if optimizer is None
+            else optimizer
         )
         self.device = next(self.actor_critic.parameters()).device
         self.normalized_advantage = normalized_advantage
         self.reducer = None
 
-        self.actor_critic, self.optimizer = amp.initialize(
-            self.actor_critic, self.optimizer, opt_level="O1", enabled=fp16
-        )
-
-        self.reward_whitten = RunningMeanAndVar(
-            shape=(1,), use_distrib=False, always_training=True
-        )
+        self.reward_whitten = RunningMeanAndVar(shape=(1,))
         self.reward_whitten.to(self.device)
 
     def init_distributed(self, group=None):
@@ -92,11 +94,7 @@ class PPO(nn.Module):
 
         self.get_advantages = self._get_advantages_distributed
 
-        torch_version = StrictVersion(torch.__version__)
-        assert torch_version >= StrictVersion("1.0")
-
-        if torch_version >= StrictVersion("1.1"):
-            self.reducer = self.ddp.ddp.reducer
+        self.reducer = self.ddp.ddp.reducer
 
     def forward(self, *x):
         raise NotImplementedError
@@ -231,7 +229,8 @@ class PPO(nn.Module):
                     - dist_entropy * self.entropy_coef
                     + aux_loss
                 )
-                self.reducer.prepare_for_backward([total_loss])
+                if self.reducer is not None:
+                    self.reducer.prepare_for_backward([total_loss])
 
                 total_loss.backward()
 

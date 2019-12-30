@@ -28,11 +28,12 @@ from habitat.datasets import make_dataset
 from habitat.datasets.pointnav.pointnav_dataset import PointNavDatasetV1
 from habitat.utils.visualizations import maps
 from nav_analysis.config.default import cfg as cfg_baseline
+from nav_analysis.rl import splitnet_nav_envs
 from nav_analysis.rl.ppo import PPO, Policy
+from nav_analysis.rl.ppo.two_agent_policy import TwoAgentPolicy
 from nav_analysis.rl.ppo.utils import batch_obs
 from nav_analysis.rl.rnn_memory_buffer import RNNMemoryBuffer
 from nav_analysis.train_ppo import LoopNavRLEnv, NavRLEnv, make_env_fn
-from nav_analysis.rl import splitnet_nav_envs
 
 CFG_DIR = osp.join(osp.dirname(nav_analysis.__file__), "configs")
 
@@ -53,9 +54,12 @@ def val_env_fn(task, config_env, config_baseline, rank):
     config_env.SIMULATOR.SCENE = dataset.episodes[0].scene_id
     config_env.freeze()
 
-    if task == "loopnav":
+    if task in {"loopnav", "teleportnav"}:
         env = LoopNavRLEnv(
-            config_env=config_env, config_baseline=config_baseline, dataset=dataset
+            config_env=config_env,
+            config_baseline=config_baseline,
+            dataset=dataset,
+            task=task,
         )
     elif task == "flee":
         env = splitnet_nav_envs.RunAwayRLEnv(config_env, dataset)
@@ -83,6 +87,7 @@ def images_to_video(images, output_dir, video_name):
 def poll_checkpoint_folder(checkpoint_folder, previous_ckpt_ind):
     assert os.path.isdir(checkpoint_folder), "invalid checkpoint folder path"
     models = os.listdir(checkpoint_folder)
+    models = list(filter(lambda x: x.endswith(".pth"), models))
     models.sort(key=lambda x: int(x.strip().split(".")[1]))
 
     #  models = list(reversed(models))
@@ -152,16 +157,24 @@ def construct_val_envs(args):
             config_env.SIMULATOR.RGB_SENSOR.HEIGHT = 2
             config_env.SIMULATOR.RGB_SENSOR.WIDTH = 2
 
-        config_env.SIMULATOR.AGENT_0.TURNAROUND = args.task.nav_task == "loopnav"
-
-        if args.task.nav_task == "loopnav":
-            config_env.TASK.MEASUREMENTS = ["LOOPSPL", "LOOP_D_DELTA"]
+        if args.task.nav_task in ["loopnav", "teleportnav"]:
+            config_env.SIMULATOR.AGENT_0.TURNAROUND = True
+            config_env.TASK.MEASUREMENTS = ["LOOPSPL", "LOOP_D_DELTA", "LOOP_COMPARE"]
             config_env.TASK.LOOPSPL.BREAKDOWN_METRIC = True
             config_env.TASK.LOOPNAV_GIVE_RETURN_OBS = (
                 args.task.loopnav_give_return_inputs
             )
+
+            if args.task.nav_task == "teleportnav":
+                config_env.TASK.LOOPSPL.TELEPORT = True
+                config_env.TASK.LOOP_D_DELTA.TELEPORT = True
+                config_env.TASK.LOOP_COMPARE.TELEPORT = True
+            else:
+                config_env.TASK.LOOPSPL.TELEPORT = False
+                config_env.TASK.LOOP_D_DELTA.TELEPORT = False
+                config_env.TASK.LOOP_COMPARE.TELEPORT = False
         else:
-            config_env.TASK.MEASUREMENTS = ["SPL"]
+            config_env.TASK.MEASUREMENTS = ["SPL", "LOOP_D_DELTA"]
 
         if args.general.video:
             config_env.TASK.MEASUREMENTS.append("TOP_DOWN_MAP")
@@ -222,7 +235,7 @@ def main():
         "--nav-task",
         type=str,
         required=True,
-        choices=["pointnav", "loopnav", "flee", "explore"],
+        choices=["pointnav", "loopnav", "flee", "explore", "teleportnav"],
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--tensorboard-dir", type=str, required=True)
@@ -256,7 +269,7 @@ def main():
             logger.warning("current_ckpt: {}".format(current_ckpt))
 
             if args.video == 1:
-                rgb_frames = [[]] * args.num_processes
+                rgb_frames = [[] for _ in range(args.num_processes)]
                 if not os.path.exists(args.out_dir_video):
                     os.makedirs(args.out_dir_video)
             else:
@@ -277,15 +290,15 @@ def main():
             trained_args.ppo.num_processes = args.num_processes
 
             trained_args.task.nav_task = args.nav_task
+            trained_args.task.max_episode_timesteps = 2000
 
             if trained_args.task.nav_task == "pointnav":
                 key_spl = "spl"
-            elif trained_args.task.nav_task == "loopnav":
+            elif trained_args.task.nav_task in {"loopnav", "teleportnav"}:
                 key_spl = "loop_spl"
 
             envs = construct_val_envs(trained_args)
-
-            actor_critic = Policy(
+            policy_kwargs = dict(
                 observation_space=envs.observation_spaces[0],
                 action_space=envs.action_spaces[0],
                 hidden_size=trained_args.model.hidden_size,
@@ -295,17 +308,57 @@ def main():
                 rnn_type=trained_args.model.rnn_type,
                 resnet_baseplanes=trained_args.model.resnet_baseplanes,
                 backbone=trained_args.model.backbone,
-                task=trained_args.task.nav_task,
+                task=trained_args.task.nav_task
+                if trained_args.training_stage == -1
+                else "loopnav",
                 norm_visual_inputs=trained_args.model.norm_visual_inputs,
                 two_headed=trained_args.model.two_headed,
             )
-            actor_critic.load_state_dict(
-                {
-                    k[len("actor_critic.") :]: v
-                    for k, v in trained_ckpt["state_dict"].items()
-                    if "ddp" not in k and "actor_critic" in k
-                }
-            )
+            if trained_args.task.training_stage == 2:
+                actor_critic = TwoAgentPolicy(**policy_kwargs)
+                stage_1_state = torch.load(
+                    trained_args.stage_2_args.stage_1_model, map_location="cpu"
+                )["state_dict"]
+                stage_2_state = trained_ckpt["state_dict"]
+
+                net_state = {}
+                for stage, weights in enumerate([stage_1_state, stage_2_state]):
+                    for k, v in weights.items():
+                        if k.startswith("actor_critic.net."):
+                            k = k.replace("actor_critic.net.", "")
+                            idx = k.find(".")
+                            k = k[0 : idx + 1] + f"{stage}." + k[idx + 1 :]
+
+                            net_state[k] = v
+
+                actor_critic.net.load_state_dict(net_state)
+
+                action_state = {}
+                for stage, weights in enumerate([stage_1_state, stage_2_state]):
+                    for k, v in weights.items():
+                        if k.startswith("actor_critic.action_distribution."):
+                            k = k.replace("actor_critic.action_distribution.", "")
+                            idx = k.find(".")
+                            k = k[0 : idx + 1] + f"{stage}." + k[idx + 1 :]
+
+                            action_state[k] = v
+
+                actor_critic.action_distribution.load_state_dict(action_state)
+            else:
+
+                actor_critic = (
+                    TwoAgentPolicy(**policy_kwargs)
+                    if trained_args.model.double_agent
+                    else Policy(**policy_kwargs)
+                )
+
+                actor_critic.load_state_dict(
+                    {
+                        k[len("actor_critic.") :]: v
+                        for k, v in trained_ckpt["state_dict"].items()
+                        if "ddp" not in k and "actor_critic" in k
+                    }
+                )
 
             actor_critic = actor_critic.to(device)
             actor_critic.eval()
@@ -348,7 +401,13 @@ def main():
                             rnn_memory_buffer.get_hidden_states()
                         )
 
-                        _, actions, _, _, test_recurrent_hidden_states = actor_critic.act(
+                        (
+                            _,
+                            actions,
+                            _,
+                            _,
+                            test_recurrent_hidden_states,
+                        ) = actor_critic.act(
                             batch,
                             test_recurrent_hidden_states,
                             prev_actions,
@@ -395,7 +454,7 @@ def main():
                             pbar.update()
                             total_episode_counts += 1
 
-                            if trained_args.task.nav_task == "loopnav":
+                            if trained_args.task.nav_task in {"loopnav", "teleportnav"}:
                                 res = {}
                                 for k in infos[i][key_spl]:
                                     res[k] = infos[i][key_spl][k]
@@ -407,6 +466,7 @@ def main():
                                 res["stage_2_d_delta"] = infos[i]["loop_d_delta"][
                                     "stage_2"
                                 ]
+                                res["loop_compare"] = infos[i]["loop_compare"]
 
                                 logger.info(
                                     "EP {}, S1 SPL: {:.3f}, "
@@ -428,6 +488,7 @@ def main():
                                 stats_episodes[current_episodes[i].episode_id] = {
                                     key_spl: infos[i][key_spl],
                                     "success": (infos[i][key_spl] > 0),
+                                    "d_delta": infos[i]["loop_d_delta"]["stage_1"],
                                 }
 
                                 logger.info(
@@ -448,7 +509,7 @@ def main():
 
                             if args.video == 1:
                                 if isinstance(infos[i][key_spl], dict):
-                                    video_name = "{:03d}_{}_dist={:.2f}_spl1={:.2f}_spl2={:.2f}_dd1={:.2f}_dd2={:.2f}_nact={}".format(
+                                    video_name = "{}_{}_dist={:.2f}_spl1={:.2f}_spl2={:.2f}_dd1={:.2f}_dd2={:.2f}_nact={}".format(
                                         current_episodes[i].episode_id,
                                         osp.splitext(
                                             osp.basename(current_episodes[i].scene_id)
@@ -536,9 +597,13 @@ def main():
                         )
 
                     if trained_args.task.nav_task == "pointnav":
-                        pbar.set_postfix(spl=_avg("spl"), success=_avg("success"))
+                        pbar.set_postfix(
+                            spl=_avg("spl"),
+                            success=_avg("success"),
+                            d_delta=_avg("d_delta"),
+                        )
 
-                    elif trained_args.task.nav_task == "loopnav":
+                    elif trained_args.task.nav_task in {"loopnav", "teleportnav"}:
 
                         pbar.set_postfix(
                             total_spl=_avg("total_spl"),
@@ -547,6 +612,7 @@ def main():
                             stage_2_spl=_avg("stage_2_spl"),
                             stage_1_d_delta=_avg("stage_1_d_delta"),
                             stage_2_d_delta=_avg("stage_2_d_delta"),
+                            loop_compare=_avg("loop_compare"),
                         )
                     elif trained_args.task.nav_task == "flee":
                         pbar.set_postfix(flee_dist=_avg("flee_dist"))
@@ -576,7 +642,7 @@ def main():
 
             logger.info("Checkpoint {} results:".format(current_ckpt))
 
-            if trained_args.task.nav_task == "loopnav":
+            if trained_args.task.nav_task in {"loopnav", "teleportnav"}:
                 total_success = (
                     py_().values().map("success").map(int).sum()(stats_episodes)
                 )

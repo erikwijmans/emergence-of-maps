@@ -1,0 +1,5 @@
+model:
+    rnn_type: LSTM
+    hidden_size: 1024
+    num_recurrent_layers: 2
+

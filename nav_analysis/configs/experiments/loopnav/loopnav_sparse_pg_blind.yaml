@@ -5,16 +5,21 @@ model:
 
 ppo:
     num_processes: 8
-    num_steps: 512
+    num_steps: 256
+    ppo_epoch: 2
 
 task:
     nav_task: loopnav
     loopnav_give_return_inputs: True
     task_config: tasks/loopnav/mp3d-gibson.loopnav.yaml
-    max_episode_timesteps: 1000
+    max_episode_timesteps: 2000
 
 
 
     pointgoal_sensor_type: SPARSE
     pointgoal_sensor_dimensions: 3
     pointgoal_sensor_format: CARTESIAN
+
+
+logging:
+    checkpoint_interval: 500

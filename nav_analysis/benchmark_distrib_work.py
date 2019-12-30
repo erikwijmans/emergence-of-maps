@@ -3,14 +3,14 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-import logging
 import contextlib
 import json
-import socket
+import logging
 import os
 import os.path as osp
 import random
 import signal
+import socket
 import sys
 import threading
 from collections import deque
@@ -23,7 +23,11 @@ from torch.utils import tensorboard
 
 from habitat import logger
 from nav_analysis.rl.ppo import PPO, Policy, RolloutStorage
-from nav_analysis.rl.ppo.utils import batch_obs, ppo_args, update_linear_schedule
+from nav_analysis.rl.ppo.utils import (
+    batch_obs,
+    ppo_args,
+    update_linear_schedule,
+)
 from nav_analysis.train_ppo import construct_envs
 
 torch.backends.cudnn.enabled = True

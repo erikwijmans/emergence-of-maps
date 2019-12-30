@@ -1,29 +1,26 @@
-import contextlib
 import argparse
+import contextlib
 import glob
 import os.path as osp
 
-import numba
 import h5py as h5
+import imageio
+import numba
 import numpy as np
 import torch
-import torch.nn as nn
 import torch.distributed as distrib
+import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.data
 import tqdm
+from apex import amp
+from scipy import ndimage
 from sklearn.decomposition import PCA
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.svm import LinearSVC
 from torch.utils import tensorboard
-import imageio
-
-from scipy import ndimage
-
 
 from nav_analysis.utils.ddp_utils import init_distrib_slurm
-
-from apex import amp
 
 torch.backends.cudnn.enabled = True
 torch.backends.cudnn.benchmark = True

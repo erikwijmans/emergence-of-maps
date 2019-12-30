@@ -1,0 +1,7 @@
+task:
+    nav_task: pointnav
+    training_stage: 2
+
+stage_2_args:
+    state_type: trained
+    stage_1_model: /private/home/erikwijmans/projects/navigation-analysis-habitat/data/checkpoints/mp3d-gibson-all-loopnav-stage-1-v5-blind/ckpt.278.pth

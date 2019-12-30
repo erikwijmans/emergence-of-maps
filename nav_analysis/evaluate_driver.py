@@ -28,12 +28,12 @@ from habitat.datasets import make_dataset
 from habitat.datasets.pointnav.pointnav_dataset import PointNavDatasetV1
 from habitat.utils.visualizations import maps
 from nav_analysis.config.default import cfg as cfg_baseline
+from nav_analysis.evaluate_ppo import construct_val_envs
+from nav_analysis.rl import splitnet_nav_envs
 from nav_analysis.rl.ppo import PPO, Policy
+from nav_analysis.rl.ppo.driver_policy import DriverPolicy
 from nav_analysis.rl.ppo.utils import batch_obs
 from nav_analysis.train_ppo import LoopNavRLEnv, NavRLEnv, make_env_fn
-from nav_analysis.rl import splitnet_nav_envs
-from nav_analysis.rl.ppo.driver_policy import DriverPolicy
-from nav_analysis.evaluate_ppo import construct_val_envs
 
 CFG_DIR = osp.join(osp.dirname(nav_analysis.__file__), "configs")
 

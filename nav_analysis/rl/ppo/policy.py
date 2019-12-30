@@ -9,14 +9,15 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
-from habitat.sims.habitat_simulator import SimulatorActions
 
-import nav_analysis.rl.resnet
 import nav_analysis.rl.efficient_net
+import nav_analysis.rl.resnet
+from habitat.sims.habitat_simulator import SimulatorActions
+from nav_analysis.rl.dpfrl import DPFRL
+from nav_analysis.rl.frn_layer import TLU, FRNLayer
 from nav_analysis.rl.layer_norm_lstm import LayerNormLSTM
 from nav_analysis.rl.ppo.utils import CategoricalNet, Flatten
-from nav_analysis.rl.running_mean_and_var import RunningMeanAndVar
-from nav_analysis.rl.dpfrl import DPFRL
+from nav_analysis.rl.running_mean_and_var import ImageAutoRunningMeanAndVar
 
 
 class Policy(nn.Module):
@@ -173,8 +174,8 @@ class ResNetEncoder(nn.Module):
                 padding=1,
                 bias=False,
             ),
-            nn.GroupNorm(1, bn_size),
-            nn.ReLU(True),
+            FRNLayer(bn_size),
+            TLU(bn_size),
         )
 
     def forward(self, x):
@@ -227,11 +228,9 @@ class Net(nn.Module):
             self._n_input_depth = 0
 
         self._norm_inputs = norm_visual_inputs
-        self._norm_inputs = True
+        #  self._norm_inputs = True
         if self._norm_inputs and not blind:
-            self.running_mean_and_var = RunningMeanAndVar(
-                shape=(self._n_input_depth + self._n_input_rgb, 1, 1)
-            )
+            self.running_mean_and_var = ImageAutoRunningMeanAndVar(n_channels=1)
 
         self.prev_action_embedding = nn.Embedding(5, 32)
         self._n_prev_action = 32
@@ -251,11 +250,13 @@ class Net(nn.Module):
         else:
             self.gps_compass_embed = None
 
-        if "episode_stage" in observation_space.spaces:
-            self.stage_embed = nn.Embedding(2, 32)
+        if "dist_to_goal" in observation_space.spaces:
+            self.dist_to_goal_embed = nn.Linear(
+                observation_space.spaces["dist_to_goal"].shape[0], 32
+            )
             self._n_input_goal += 32
         else:
-            self.stage_embed = None
+            self.dist_to_goal_embed = None
 
         self._hidden_size = hidden_size
 
@@ -307,7 +308,7 @@ class Net(nn.Module):
             )
 
         self._task = task
-        if self._task == "loopnav":
+        if self._task in ["loopnav", "teleportnav"]:
             self.critic = nn.Sequential(
                 nn.Linear(hidden_size, hidden_size // 2),
                 nn.ReLU(True),
@@ -367,25 +368,56 @@ class Net(nn.Module):
 
         return hidden_states
 
-    def _mask_hidden(self, hidden_states, masks):
-        if isinstance(hidden_states, tuple):
-            hidden_states = tuple(v * masks for v in hidden_states)
+    def _mask_hidden(self, hidden_states, masks, initial_hidden_state=None):
+
+        if initial_hidden_state is None:
+            if isinstance(hidden_states, tuple):
+                hidden_states = tuple(v * masks for v in hidden_states)
+            else:
+                hidden_states = masks * hidden_states
+
         else:
-            hidden_states = masks * hidden_states
+            initial_hidden_state = initial_hidden_state.permute(1, 0, 2)
+            initial_hidden_state = self._unpack_hidden(initial_hidden_state)
+
+            if isinstance(hidden_states, tuple):
+                for curr, init in zip(hidden_states, initial_hidden_state):
+                    assert curr.size() == init.size()
+
+                hidden_states = tuple(
+                    torch.where(masks == 1, curr, init)
+                    for curr, init in zip(hidden_states, initial_hidden_state)
+                )
+            else:
+                assert hidden_states.size() == initial_hidden_state.size()
+                hidden_states = torch.where(
+                    masks == 1, hidden_states, initial_hidden_state
+                )
 
         return hidden_states
 
-    def forward_rnn(self, x, hidden_states, masks, prev_actions):
+    def forward_rnn(self, x, hidden_states, masks, prev_actions, observations):
         if x.size(0) == hidden_states.size(1):
             hidden_states = self._unpack_hidden(hidden_states)
             x, hidden_states = self.rnn(
-                x.unsqueeze(0), self._mask_hidden(hidden_states, masks.unsqueeze(0))
+                x.unsqueeze(0),
+                self._mask_hidden(
+                    hidden_states,
+                    masks.unsqueeze(0),
+                    observations.get("initial_hidden_state", None),
+                ),
             )
             x = x.squeeze(0)
         else:
             # x is a (T, N, -1) tensor flattened to (T * N, -1)
             n = hidden_states.size(1)
             t = int(x.size(0) / n)
+
+            initial_hidden_states = observations.get("initial_hidden_state", None)
+            if initial_hidden_states is not None:
+                initial_hidden_states = initial_hidden_states.view(
+                    t, n, *initial_hidden_states.size()[1:]
+                )
 
             # unflatten
             x = x.view(t, n, x.size(1))
@@ -434,7 +466,13 @@ class Net(nn.Module):
 
                 rnn_scores, hidden_states = self.rnn(
                     x[start_idx:end_idx],
-                    self._mask_hidden(hidden_states, masks[start_idx].view(1, -1, 1)),
+                    self._mask_hidden(
+                        hidden_states,
+                        masks[start_idx].view(1, -1, 1),
+                        initial_hidden_states[start_idx]
+                        if initial_hidden_states is not None
+                        else None,
+                    ),
                 )
 
                 outputs.append(rnn_scores)
@@ -474,8 +512,12 @@ class Net(nn.Module):
             goal_observations = torch.stack([rho_obs, phi_obs], -1)
 
         goal_observations = self.tgt_embed(goal_observations)
+        start_tok = torch.full_like(
+            prev_actions, 4 if "initial_hidden_state" in observations else 0
+        )
+
         prev_actions_emb = self.prev_action_embedding(
-            ((prev_actions.float() + 1) * masks).long().squeeze(-1)
+            torch.where(masks == 1, prev_actions + 1, start_tok).squeeze(-1)
         )
 
         x = []
@@ -496,13 +538,13 @@ class Net(nn.Module):
         if self.gps_compass_embed is not None:
             x += [self.gps_compass_embed(observations["gps_and_compass"])]
 
-        if self.stage_embed is not None:
-            x += [self.stage_embed(observations["episode_stage"].long().squeeze(-1))]
+        if self.dist_to_goal_embed is not None:
+            x += [self.dist_to_goal_embed(observations["dist_to_goal"])]
 
         x = torch.cat(x, dim=1)  # concatenate goal vector
 
         x, rnn_hidden_states = self.forward_rnn(
-            x, rnn_hidden_states, masks, prev_actions
+            x, rnn_hidden_states, masks, prev_actions, observations
         )
 
         if self._task == "pointnav":

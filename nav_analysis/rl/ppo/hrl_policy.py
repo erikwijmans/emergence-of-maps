@@ -12,10 +12,9 @@ import torchvision
 
 import nav_analysis.rl.resnet
 from nav_analysis.rl.layer_norm_lstm import LayerNormLSTM
+from nav_analysis.rl.ppo.policy import Net as PPONet, Policy
 from nav_analysis.rl.ppo.utils import CategoricalNet, Flatten
 from nav_analysis.rl.running_mean_and_var import RunningMeanAndVar
-from nav_analysis.rl.ppo.policy import Net as PPONet
-from nav_analysis.rl.ppo.policy import Policy
 
 
 class HRLPolicy(nn.Module):

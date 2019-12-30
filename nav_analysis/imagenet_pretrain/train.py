@@ -1,20 +1,17 @@
 import attr
 import numpy as np
-
 import torch
+import torch.distributed as distrib
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.distributed as distrib
 import torchvision
 import torchvision.transforms as T
+from apex import amp
 
-
-from nav_analysis.utils.ddp_utils import init_distrib_slurm
+import nav_analysis.rl.resnet
 from nav_analysis.rl.ppo.policy import ResNetEncoder
 from nav_analysis.rl.running_mean_and_var import RunningMeanAndVar
-import nav_analysis.rl.resnet
-
-from apex import amp
+from nav_analysis.utils.ddp_utils import init_distrib_slurm
 
 torch.backends.cudnn.enabled = True
 torch.backends.cudnn.benchmark = True

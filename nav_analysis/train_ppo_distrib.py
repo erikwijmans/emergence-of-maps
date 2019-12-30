@@ -20,7 +20,13 @@ from torch.utils import tensorboard
 
 from habitat import logger
 from nav_analysis.rl.ppo import PPO, Policy, RolloutStorage
-from nav_analysis.rl.ppo.utils import batch_obs, ppo_args, update_linear_schedule
+from nav_analysis.rl.ppo.ant_policy import AntPolicy
+from nav_analysis.rl.ppo.two_agent_policy import TwoAgentPolicy
+from nav_analysis.rl.ppo.utils import (
+    batch_obs,
+    ppo_args,
+    update_linear_schedule,
+)
 from nav_analysis.train_ppo import construct_envs
 
 torch.backends.cudnn.enabled = True
@@ -127,7 +133,7 @@ def main():
     with construct_envs(args) as envs:
 
         num_recurrent_layers = args.model.num_recurrent_layers
-        actor_critic = Policy(
+        policy_kwargs = dict(
             observation_space=envs.observation_spaces[0],
             action_space=envs.action_spaces[0],
             hidden_size=args.model.hidden_size,
@@ -137,10 +143,17 @@ def main():
             rnn_type=args.model.rnn_type,
             resnet_baseplanes=args.model.resnet_baseplanes,
             backbone=args.model.backbone,
-            task=args.task.nav_task,
+            task=args.task.nav_task if args.task.training_stage == -1 else "loopnav",
             norm_visual_inputs=args.model.norm_visual_inputs,
             two_headed=args.model.two_headed,
         )
+        actor_critic = (
+            TwoAgentPolicy(**policy_kwargs)
+            if args.model.double_agent
+            else Policy(**policy_kwargs)
+        )
+
+        #  actor_critic = AntPolicy(**policy_kwargs)
 
         if args.transfer.pretrained_policy:
             policy_weights = torch.load(
@@ -184,6 +197,19 @@ def main():
 
             del enc_weights
 
+        if args.task.training_stage == 2:
+            stage_1_weights = torch.load(
+                args.stage_2_args.stage_1_model, map_location="cpu"
+            )["state_dict"]
+
+            actor_critic.load_state_dict(
+                {
+                    k[len("actor_critic.") :]: v
+                    for k, v in stage_1_weights.items()
+                    if "actor_critic." in k
+                }
+            )
+
         actor_critic.to(device)
 
         agent = PPO(
@@ -199,25 +225,28 @@ def main():
             weight_decay=args.optimizer.weight_decay,
         )
 
-        env_time = 0
-        pth_time = 0
         sync_time = 0
+        opt_time = torch.tensor(0.0, device=device, dtype=torch.float32)
+        env_time = torch.tensor(0.0, device=device, dtype=torch.float32)
+        inference_time = torch.tensor(0.0, device=device, dtype=torch.float32)
         count_steps = torch.tensor(0, device=device, dtype=torch.int64)
         count_checkpoints = 0
         update_start_from = 0
         prev_time = 0
 
         if osp.exists(STATE_FILE):
-            ckpt = torch.load(STATE_FILE, map_location=device)
+            ckpt = torch.load(STATE_FILE, map_location="cpu")
             agent.load_state_dict(
                 {k: v for k, v in ckpt["state_dict"].items() if "ddp" not in k}
             )
             agent.optimizer.load_state_dict(ckpt["optim_state"])
 
-            env_time = ckpt["extra"]["env_time"]
-            pth_time = ckpt["extra"]["pth_time"]
+            env_time[...] = ckpt["extra"]["env_time"]
+            opt_time[...] = ckpt["extra"]["opt_time"]
+            inference_time[...] = ckpt["extra"]["inference_time"]
+
             sync_time = ckpt["extra"]["sync_time"]
-            count_steps = ckpt["extra"]["count_steps"]
+            count_steps[...] = ckpt["extra"]["count_steps"]
             count_checkpoints = ckpt["extra"]["count_checkpoints"]
             update_start_from = ckpt["extra"]["update"]
             prev_time = ckpt["extra"]["prev_time"]
@@ -282,7 +311,7 @@ def main():
 
             window_episode_spl = deque(maxlen=args.logging.reward_window_size)
             window_episode_successes = deque(maxlen=args.logging.reward_window_size)
-        elif args.task.nav_task == "loopnav":
+        elif args.task.nav_task in ["loopnav", "teleportnav"]:
             episode_successes = torch.zeros(envs.num_envs, 1).to(device)
             episode_spls = torch.zeros(envs.num_envs, 1).to(device)
             episode_stage_1_spls = torch.zeros(envs.num_envs, 1).to(device)
@@ -311,8 +340,6 @@ def main():
                 maxlen=args.logging.reward_window_size
             )
 
-        t_start = time()
-
         tb_enabled = WORLD_RANK == 0
         if tb_enabled:
             writer_kwargs = dict(log_dir=tensorboard_dir, purge_step=count_steps.item())
@@ -323,7 +350,12 @@ def main():
             if tb_enabled
             else contextlib.suppress()
         ) as writer:
+            dist.barrier()
+            t_start = time()
             for update in range(update_start_from, args.ppo.num_updates):
+
+                if args.model.double_agent and update == int(5e4):
+                    agent.actor_critic.sync_params()
 
                 if args.ppo.linear_lr_decay:
                     update_linear_schedule(
@@ -356,7 +388,8 @@ def main():
                             rollouts.prev_actions[step],
                             rollouts.masks[step],
                         )
-                    pth_time += time() - t_sample_action
+
+                    inference_time = inference_time + (time() - t_sample_action)
 
                     t_step_env = time()
 
@@ -365,9 +398,8 @@ def main():
                         list(x) for x in zip(*outputs)
                     ]
 
-                    env_time += time() - t_step_env
+                    env_time = env_time + (time() - t_step_env)
 
-                    t_update_stats = time()
                     batch = batch_obs(observations, device)
                     rewards = torch.tensor(rewards, dtype=torch.float, device=device)
                     rewards = rewards.unsqueeze(1)
@@ -378,10 +410,11 @@ def main():
                         device=device,
                     )
 
-                    current_episode_reward += args.ppo.gamma * rewards
-                    agent.reward_whitten.update(current_episode_reward)
-                    rewards = rewards / agent.reward_whitten.stdev
-                    rewards = torch.clamp(rewards, -5.0, 5.0)
+                    current_episode_reward.copy_(
+                        current_episode_reward * args.ppo.gamma + rewards
+                    )
+                    with torch.no_grad():
+                        agent.reward_whitten.update(current_episode_reward)
 
                     episode_rewards += (1.0 - masks) * current_episode_reward
                     episode_counts += 1.0 - masks
@@ -405,7 +438,7 @@ def main():
                             dtype=torch.float,
                             device=device,
                         )
-                    elif args.task.nav_task == "loopnav":
+                    elif args.task.nav_task in ["loopnav", "teleportnav"]:
                         key_spl = "loop_spl"
                         episode_spls += torch.tensor(
                             [
@@ -479,6 +512,15 @@ def main():
                             device=device,
                         )
 
+                    #  rewards = torch.clamp(
+                    #  rewards
+                    #  / torch.max(
+                    #  agent.reward_whitten.stdev,
+                    #  torch.tensor(1.0, device=rewards.device),
+                    #  ),
+                    #  -5.0,
+                    #  5.0,
+                    #  )
                     rollouts.insert(
                         batch,
                         recurrent_hidden_states,
@@ -489,8 +531,6 @@ def main():
                         masks,
                         entropy,
                     )
-
-                    pth_time += time() - t_update_stats
 
                     if (step + 1) >= (args.ppo.num_steps / 4) and int(
                         is_done_store.get("num_done")
@@ -505,7 +545,7 @@ def main():
                     time() - t_sync, device=device, dtype=torch.float32
                 )
                 dist.all_reduce(t_sync)
-                sync_time += t_sync.item() / world_size
+                sync_time = sync_time + (t_sync.item() / world_size)
 
                 #  rollout_length = list(
                 #  torch.full((world_size, 1), rollouts.step, device=device).unbind(0)
@@ -556,7 +596,7 @@ def main():
                 losses /= world_size
 
                 rollouts.after_update()
-                pth_time += time() - t_update_model
+                opt_time = opt_time + (time() - t_update_model)
 
                 torch.cuda.synchronize()
                 if WORLD_RANK == 0:
@@ -572,7 +612,7 @@ def main():
                         ],
                         1,
                     )
-                elif args.task.nav_task == "loopnav":
+                elif args.task.nav_task in ["loopnav", "teleportnav"]:
                     stats = torch.cat(
                         [
                             episode_rewards,
@@ -604,7 +644,7 @@ def main():
                     window_episode_spl.append(stats[:, 1])
                     window_episode_successes.append(stats[:, 2])
                     window_episode_counts.append(stats[:, 3])
-                elif args.task.nav_task == "loopnav":
+                elif args.task.nav_task in ["loopnav", "teleportnav"]:
                     window_episode_reward.append(stats[:, 0])
                     window_episode_stage_1_spl.append(stats[:, 1])
                     window_episode_stage_2_spl.append(stats[:, 2])
@@ -636,7 +676,7 @@ def main():
                                 window_episode_successes,
                             ],
                         )
-                    elif args.task.nav_task == "loopnav":
+                    elif args.task.nav_task in {"loopnav", "teleportnav"}:
                         stats = zip(
                             [
                                 "count",
@@ -717,7 +757,7 @@ def main():
                             },
                             count_steps,
                         )
-                    elif args.task.nav_task == "loopnav":
+                    elif args.task.nav_task in {"loopnav", "teleportnav"}:
                         writer.add_scalars(
                             "metrics",
                             {
@@ -760,7 +800,8 @@ def main():
                         count_steps=count_steps,
                         update=update,
                         count_checkpoints=count_checkpoints,
-                        pth_time=pth_time,
+                        opt_time=opt_time,
+                        inference_time=inference_time,
                         env_time=env_time,
                         sync_time=sync_time,
                         output_log_file=output_log_file,
@@ -792,14 +833,14 @@ def main():
                         )
 
                         logger.info(
-                            "update: {}\tenv-time: {:.3f}s\tpth-time: {:.3f}s\tsync-time: {:.3f}s\tsync-frac: {:.3f}"
+                            "update: {}\tenv-time: {:.3f}s\tinference-time: {:.3f}s\topt-time: {:.3f}s\tsync-time: {:.3f}s\tsync-frac: {:.3f}"
                             "\tframes: {}".format(
                                 update,
-                                env_time,
-                                pth_time,
+                                env_time.item(),
+                                inference_time.item(),
+                                opt_time.item(),
                                 sync_time,
-                                sync_time
-                                / max((env_time + pth_time + sync_time), 1e-8),
+                                sync_time / (time() - t_start + prev_time),
                                 count_steps.item(),
                             )
                         )
@@ -818,7 +859,7 @@ def main():
                                 window_episode_successes[-1]
                                 - window_episode_successes[0]
                             ).sum()
-                        elif args.task.nav_task == "loopnav":
+                        elif args.task.nav_task in ["loopnav", "teleportnav"]:
                             window_spl = (
                                 window_episode_spl[-1] - window_episode_spl[0]
                             ).sum()
@@ -867,7 +908,7 @@ def main():
                                         (window_successes / window_counts).item(),
                                     )
                                 )
-                            elif args.task.nav_task == "loopnav":
+                            elif args.task.nav_task in ["loopnav", "teleportnav"]:
                                 logger.info(
                                     "Average window size {} reward: {:.3f}\t"
                                     "stage-1 spl: {:.3f}\t"

@@ -9,7 +9,7 @@
 #SBATCH --mem-per-cpu=5625MB
 #SBATCH --partition=learnfair
 #SBATCH --time=72:00:00
-#SBATCH --signal=USR1@60
+#SBATCH --signal=USR1@300
 #SBATCH --open-mode=append
 echo "#SBATCH --constraint=volta32gb"
 
@@ -33,16 +33,16 @@ ENV_NAME="gibson-2plus-resnet50-dpfrl-depth"
 # ENV_NAME="mp3d-gibson-all-loopnav-noreturn-baseline-blind"
 # ENV_NAME="mp3d-gibson-50-online-long-depth"
 # ENV_NAME="gibson-public-flee-pointnav-ftune-rgb-r${SLURM_ARRAY_TASK_ID}"
-ENV_NAME="mp3d-gibson-2plus-resnet50-lstm512-speedmaster-16-by-9-hfov-70-grayscale"
-ENV_NAME="gibson-2plus-resnet18-depth"
-# ENV_NAME="mp3d-gibson-all-loopnav-stop-grad-v2-blind"
-# ENV_NAME="testing"
+ENV_NAME="gibson-2plus-resnet50-frn-depth"
+ENV_NAME="mp3d-gibson-all-loopnav-stage-2-trained-state-blind"
+ENV_NAME="testing"
 CHECKPOINT="data/checkpoints/${ENV_NAME}"
 
 module purge
 module load cuda/10.0
 module load cudnn/v7.6-cuda.10.0
-module load NCCL/2.4.7-1-cuda.10.0
+module load NCCL/2.4.8-1-cuda.10.0
+module load openmpi/4.0.1/gcc.7.4.0-git_patch#6654
 
 export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu/nvidia-opengl:${LD_LIBRARY_PATH}
 export GLOG_minloglevel=2
@@ -52,14 +52,16 @@ export MASTER_ADDR=$(srun --ntasks=1 hostname 2>&1 | tail -n1)
 
 printenv | grep SLURM
 set -x
-srun python -u -m nav_analysis.train_ppo_distrib \
+srun --mpi=pmix_v3 \
+    python -u -m nav_analysis.train_ppo_gossip \
     --extra-confs \
-    nav_analysis/configs/experiments/models/resnet-18.yaml \
-    nav_analysis/configs/experiments/gibson-2plus.pointnav.yaml \
+    nav_analysis/configs/experiments/mp3d-gibson-2plus.pointnav.yaml \
     --opts \
     "logging.log_file=${EXP_DIR}/log.txt" \
     "logging.checkpoint_folder=${CHECKPOINT}" \
-    "logging.tensorboard_dir=runs/${ENV_NAME}"
+    "logging.tensorboard_dir=runs/${ENV_NAME}" \
     # nav_analysis/configs/experiments/mp3d-gibson-2plus.speedmaster.pointnav.yaml \
     # nav_analysis/configs/experiments/pointnav-rgb/resnet50-rgb.yaml \
+    # nav_analysis/configs/experiments/loopnav/loopnav_sparse_pg_blind.yaml \
+    # nav_analysis/configs/experiments/loopnav/stage_2_trained_state.yaml \
 

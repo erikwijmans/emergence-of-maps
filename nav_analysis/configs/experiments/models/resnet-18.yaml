@@ -1,0 +1,5 @@
+model:
+    backbone: resnet18
+
+ppo:
+    num_processes: 8

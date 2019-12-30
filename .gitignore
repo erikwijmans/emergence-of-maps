@@ -93,3 +93,4 @@ runs/
 .autoenv*
 /sandbox/code
 map_extraction_runs/
+.dumbo.json

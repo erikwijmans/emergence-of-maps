@@ -1,10 +1,10 @@
 import argparse
 import os.path as osp
 
+import h5py as h5
 import lmdb
 import msgpack
 import msgpack_numpy
-import h5py as h5
 import numpy as np
 import tqdm
 

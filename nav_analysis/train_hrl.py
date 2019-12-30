@@ -15,18 +15,22 @@ from time import sleep, time
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 import torch.distributed as dist
+import torch.nn.functional as F
+from gym import spaces
+from gym.spaces.dict_space import Dict as SpaceDict
 from torch.utils import tensorboard
 
 from habitat import logger
 from nav_analysis.rl.ppo import PPO, Policy, RolloutStorage
 from nav_analysis.rl.ppo.driver_policy import DriverPolicy
 from nav_analysis.rl.ppo.hrl_policy import HRLPolicy
-from nav_analysis.rl.ppo.utils import batch_obs, ppo_args, update_linear_schedule
+from nav_analysis.rl.ppo.utils import (
+    batch_obs,
+    ppo_args,
+    update_linear_schedule,
+)
 from nav_analysis.train_ppo import construct_envs
-from gym.spaces.dict_space import Dict as SpaceDict
-from gym import spaces
 
 torch.backends.cudnn.enabled = True
 torch.backends.cudnn.benchmark = True

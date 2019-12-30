@@ -4,6 +4,7 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+import math
 import os
 import os.path as osp
 import random
@@ -22,9 +23,13 @@ from habitat.datasets import make_dataset
 from habitat.datasets.pointnav.pointnav_dataset import PointNavDatasetV1
 from habitat.sims.habitat_simulator import SimulatorActions
 from nav_analysis.config.default import cfg as cfg_baseline
-from nav_analysis.rl.ppo import PPO, Policy, RolloutStorage
-from nav_analysis.rl.ppo.utils import batch_obs, ppo_args, update_linear_schedule
 from nav_analysis.rl import splitnet_nav_envs
+from nav_analysis.rl.ppo import PPO, Policy, RolloutStorage
+from nav_analysis.rl.ppo.utils import (
+    batch_obs,
+    ppo_args,
+    update_linear_schedule,
+)
 
 CFG_DIR = osp.join(osp.dirname(nav_analysis.__file__), "configs")
 
@@ -63,6 +68,9 @@ class NavRLEnv(habitat.RLEnv):
                 )
             )
 
+        if "delta_gps" in observations:
+            observations["delta_gps"] = np.zeros_like(observations["delta_gps"])
+
         return observations
 
     def step(self, action):
@@ -87,14 +95,11 @@ class NavRLEnv(habitat.RLEnv):
             logger.info("Infinite geodesic distance observed in get_reward")
             return 0.0
 
-        reward += self._previous_target_distance - current_target_distance
+        reward += 1.0 * (self._previous_target_distance - current_target_distance)
         self._previous_target_distance = current_target_distance
 
         if self._episode_success():
-            reward += (
-                self._config_baseline.BASELINE.RL.SUCCESS_REWARD
-                * self.get_info(observations)["spl"]
-            )
+            reward += self._config_baseline.BASELINE.RL.SUCCESS_REWARD
 
         return reward
 
@@ -135,38 +140,35 @@ class NavRLEnv(habitat.RLEnv):
         if not (-100 <= self._current_target_distance <= 100):
             info["spl"] = 0.0
             logger.info("Infinite geodesic distance observed in get_info")
-            return info
 
         return info
 
 
 class LoopNavRLEnv(NavRLEnv):
-    def __init__(self, config_env, config_baseline, dataset):
-        self._current_target = None
+    def __init__(self, config_env, config_baseline, dataset, task):
         self._episode_stage = None
         self._stages_successful = []
         self._give_return_obs = config_env.TASK.LOOPNAV_GIVE_RETURN_OBS
         self._sparse_goal_sensor = (
             config_env.TASK.POINTGOAL_SENSOR.SENSOR_TYPE == "SPARSE"
         )
+        self.task = task
         super().__init__(config_env, config_baseline, dataset)
 
     def reset(self):
         self._episode_stage = 0
         self._stages_successful = [False, False]
         output = super().reset()
-        self._current_target = self._env.current_episode.goals[0].position
         return output
 
     def step(self, action):
         self._previous_action = action
 
         curr_episode_over = False
+        teleport = False
 
         if action == SimulatorActions.STOP.value:
             if self._episode_stage == 0:
-                self._current_target = self._env.current_episode.start_position
-
                 if self._previous_target_distance < self._config_env.SUCCESS_DISTANCE:
                     # zeroth stage is successful
                     self._stages_successful[0] = True
@@ -185,18 +187,23 @@ class LoopNavRLEnv(NavRLEnv):
                 self._orig_goal = list(self._env.current_episode.goals[0].position)
                 self._orig_start = list(self._env.current_episode.start_position)
                 # swap start position and goal for stage-1
-                if not self._sparse_goal_sensor:
-                    self._env.current_episode.start_position, self._env.current_episode.goals[
-                        0
-                    ].position = (
-                        self._env.current_episode.goals[0].position,
-                        self._env.current_episode.start_position,
-                    )
+
+                if self.task == "loopnav":
+                    if not self._sparse_goal_sensor:
+                        (
+                            self._env.current_episode.start_position,
+                            self._env.current_episode.goals[0].position,
+                        ) = (
+                            self._env.current_episode.goals[0].position,
+                            self._env.current_episode.start_position,
+                        )
+                    else:
+                        # If we are doing the static point goal sensor thing, only put the goal at the start!
+                        self._env.current_episode.goals[
+                            0
+                        ].position = self._env.current_episode.start_position
                 else:
-                    # If we are doing the static point goal sensor thing, only put the goal at the start!
-                    self._env.current_episode.goals[
-                        0
-                    ].position = self._env.current_episode.start_position
+                    teleport = self._stages_successful[0]
 
                 self._previous_target_distance = self._distance_target()
             else:
@@ -219,6 +226,21 @@ class LoopNavRLEnv(NavRLEnv):
         if action == SimulatorActions.STOP.value and self._episode_stage == 0:
             self._episode_stage = 1
 
+        if teleport:
+            self._env.sim.set_agent_state(
+                self._env.current_episode.start_position,
+                self._env.current_episode.start_rotation,
+            )
+
+            sim_obs = self._env.sim._sim.get_sensor_observations()
+            observations = self._env.sim._sensor_suite.get_observations(sim_obs)
+            observations.update(
+                self._env.task.sensor_suite.get_observations(
+                    observations=observations, episode=self._env.current_episode
+                )
+            )
+            self._previous_target_distance = self._distance_target()
+
         if curr_episode_over:
             done = True
             self._env.episode_over = True
@@ -235,7 +257,6 @@ class LoopNavRLEnv(NavRLEnv):
 
     def get_reward(self, observations):
         reward = self._config_baseline.BASELINE.RL.SLACK_REWARD
-        reward = 0
 
         current_target_distance = self._distance_target()
 
@@ -247,7 +268,6 @@ class LoopNavRLEnv(NavRLEnv):
 
         reward += 5.0 * (
             (self._previous_target_distance - current_target_distance)
-            * (2.0 if self._episode_stage == 1 else 1.0)
             / self._env.current_episode.info["geodesic_distance"]
         )
         self._previous_target_distance = current_target_distance
@@ -259,7 +279,6 @@ class LoopNavRLEnv(NavRLEnv):
             self._previous_action == SimulatorActions.STOP.value
             and self._stages_successful[0]
             and self._episode_stage == 0
-            and False
         ):
             # TODO(akadian): multiply by first episode SPL
             reward = self._config_baseline.BASELINE.RL.SUCCESS_REWARD
@@ -296,11 +315,12 @@ class LoopNavRLEnv(NavRLEnv):
         if not (-100 <= self._current_target_distance <= 100):
             info["loop_spl"] = 0.0
             logger.info("Infinite geodesic distance observed in get_info")
+            print("Infinite geodesic distance observed in get_info", flush=True)
 
         return info
 
 
-def make_env_fn(task, config_env, config_baseline, shuffle_interval, rank):
+def make_env_fn(args, config_env, config_baseline, shuffle_interval, rank):
     dataset = make_dataset(config_env.DATASET.TYPE, config=config_env.DATASET)
     try:
         dataset.shuffle_episodes(shuffle_interal=shuffle_interval)
@@ -310,9 +330,14 @@ def make_env_fn(task, config_env, config_baseline, shuffle_interval, rank):
     config_env.SIMULATOR.SCENE = dataset.episodes[0].scene_id
     config_env.freeze()
 
-    if task == "loopnav":
+    task = args.task.nav_task
+    train_jointly = args.task.training_stage == -1
+    if task in ["loopnav", "teleportnav"] and train_jointly:
         env = LoopNavRLEnv(
-            config_env=config_env, config_baseline=config_baseline, dataset=dataset
+            config_env=config_env,
+            config_baseline=config_baseline,
+            dataset=dataset,
+            task=task,
         )
     elif task == "flee":
         env = splitnet_nav_envs.RunAwayRLEnv(config_env, dataset)
@@ -328,33 +353,39 @@ def make_env_fn(task, config_env, config_baseline, shuffle_interval, rank):
     return env
 
 
-def construct_envs(args, split="train", one_scene=False, dset_measures=False):
+def construct_envs(
+    args, split="train", one_scene=False, dset_measures=False, scenes=None
+):
     env_configs = []
     baseline_configs = []
 
-    basic_config = cfg_env(config_file=args.task.task_config, config_dir=CFG_DIR)
+    if scenes is None:
+        basic_config = cfg_env(config_file=args.task.task_config, config_dir=CFG_DIR)
 
-    basic_config.defrost()
-    basic_config.DATASET.SPLIT = split
-    basic_config.freeze()
-    scenes = PointNavDatasetV1.get_scenes_to_load(basic_config.DATASET)
+        basic_config.defrost()
+        basic_config.DATASET.SPLIT = split
+        basic_config.freeze()
+        scenes = PointNavDatasetV1.get_scenes_to_load(basic_config.DATASET)
 
+    random.shuffle(scenes)
     scene_splits = [[] for _ in range(args.ppo.num_processes)]
-    if len(scenes) > 0:
-        random.shuffle(scenes)
 
-        assert len(scenes) >= args.ppo.num_processes, (
-            "reduce the number of processes as there " "aren't enough number of scenes"
-        )
+    if len(scenes) < args.ppo.num_processes:
+        scenes_per_proc = math.ceil(len(scenes) / args.ppo.num_processes)
 
-        next_split_id = 0
-        for s in scenes:
-            scene_splits[next_split_id].append(s)
-            next_split_id = (next_split_id + 1) % len(scene_splits)
+        idx = 0
+        for proc_id in range(args.ppo.num_processes):
+            for _ in range(scenes_per_proc):
+                scene_splits[proc_id].append(scenes[idx])
 
-            if one_scene and next_split_id == 0:
-                break
+                idx = (idx + 1) % len(scenes)
+                if idx == 0:
+                    random.shuffle(scenes)
+    else:
+        for idx, s in enumerate(scenes):
+            scene_splits[idx % args.ppo.num_processes].append(s)
 
+    #  scene_splits = [scenes[0:1] for _ in range(args.ppo.num_processes)]
     for i in range(args.ppo.num_processes):
         config_env = cfg_env(config_file=args.task.task_config, config_dir=CFG_DIR)
         config_env.defrost()
@@ -365,8 +396,24 @@ def construct_envs(args, split="train", one_scene=False, dset_measures=False):
         else:
             config_env.DATASET.TYPE = "PointNavOTF-v1"
 
-        if len(scenes) > 0:
-            config_env.DATASET.POINTNAVV1.CONTENT_SCENES = scene_splits[i]
+        if args.task.training_stage == 2:
+            config_env.DATASET.TYPE = "Stage2LoopNav"
+            config_env.DATASET.POINTNAVV1.EPISODE_PATH = osp.realpath(
+                osp.join(osp.dirname(args.stage_2_args.stage_1_model), "episodes")
+            )
+            config_env.TASK.SENSORS = list(
+                set(config_env.TASK.SENSORS + ["INITIAL_HIDDEN_STATE"])
+            )
+
+            config_env.TASK.INITIAL_HIDDEN_STATE.SHAPE = (
+                args.model.num_recurrent_layers * 2,
+                args.model.hidden_size,
+            )
+            config_env.TASK.INITIAL_HIDDEN_STATE.STATE_TYPE = (
+                args.stage_2_args.state_type
+            )
+
+        config_env.DATASET.POINTNAVV1.CONTENT_SCENES = scene_splits[i]
 
         config_env.SIMULATOR.HABITAT_SIM_V0.GPU_DEVICE_ID = args.general.sim_gpu_id
         config_env.TASK.POINTGOAL_SENSOR.SENSOR_TYPE = args.task.pointgoal_sensor_type
@@ -384,16 +431,26 @@ def construct_envs(args, split="train", one_scene=False, dset_measures=False):
 
         config_env.SIMULATOR.AGENT_0.SENSORS = list(agent_sensors)
 
-        config_env.SIMULATOR.AGENT_0.TURNAROUND = args.task.nav_task == "loopnav"
-
-        if args.task.nav_task == "loopnav":
-            config_env.TASK.MEASUREMENTS = ["LOOPSPL", "LOOP_D_DELTA"]
+        if args.task.nav_task in ["loopnav", "teleportnav"]:
+            config_env.SIMULATOR.AGENT_0.TURNAROUND = args.task.training_stage == -1
+            config_env.TASK.MEASUREMENTS = list(
+                set(config_env.TASK.MEASUREMENTS + ["LOOPSPL", "LOOP_D_DELTA"])
+            )
             config_env.TASK.LOOPSPL.BREAKDOWN_METRIC = True
             config_env.TASK.LOOPNAV_GIVE_RETURN_OBS = (
                 args.task.loopnav_give_return_inputs
             )
+
+            if args.task.nav_task == "teleportnav":
+                config_env.TASK.LOOPSPL.TELEPORT = True
+                config_env.TASK.LOOP_D_DELTA.TELEPORT = True
+            else:
+                config_env.TASK.LOOPSPL.TELEPORT = False
+                config_env.TASK.LOOP_D_DELTA.TELEPORT = False
         else:
-            config_env.TASK.MEASUREMENTS = ["SPL"]
+            config_env.TASK.MEASUREMENTS = list(
+                set(config_env.TASK.MEASUREMENTS + ["SPL"])
+            )
 
         if dset_measures:
             config_env.TASK.MEASUREMENTS = list(
@@ -424,7 +481,7 @@ def construct_envs(args, split="train", one_scene=False, dset_measures=False):
         env_fn_args=tuple(
             tuple(
                 zip(
-                    [args.task.nav_task for _ in range(args.ppo.num_processes)],
+                    [args for _ in range(args.ppo.num_processes)],
                     env_configs,
                     baseline_configs,
                     [args.task.shuffle_interval for _ in range(args.ppo.num_processes)],

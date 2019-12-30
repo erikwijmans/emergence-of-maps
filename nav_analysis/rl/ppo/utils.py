@@ -12,9 +12,9 @@ import numpy as np
 import omegaconf
 import torch
 import torch.nn as nn
-from habitat.sims.habitat_simulator import SimulatorActions
 
 import nav_analysis
+from habitat.sims.habitat_simulator import SimulatorActions
 
 
 class Flatten(nn.Module):
@@ -43,7 +43,7 @@ class CategoricalNet(nn.Module):
     def __init__(self, num_inputs, num_outputs, task):
         super().__init__()
 
-        if task == "loopnav":
+        if task in ["loopnav", "teleportnav"]:
             self.forward_actor = nn.Sequential(
                 nn.Linear(num_inputs, num_inputs // 2),
                 nn.ReLU(True),
@@ -60,7 +60,7 @@ class CategoricalNet(nn.Module):
                 nn.init.constant_(layer.bias, 0)
 
     def forward(self, x, obs):
-        if self._task == "loopnav":
+        if self._task in ["loopnav", "teleportnav"]:
             logits = self.forward_actor(x)
         else:
             logits = self.linear(x)

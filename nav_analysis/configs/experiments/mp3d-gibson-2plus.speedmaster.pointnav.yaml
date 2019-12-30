@@ -1,0 +1,5 @@
+task:
+    task_config: tasks/speedmaster/mp3d-gibson-2plus.speedmaster.pointnav.yaml
+
+ddppo:
+    sync_frac: 0.6

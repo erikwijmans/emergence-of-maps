@@ -1,0 +1,3 @@
+task:
+    nav_task: pointnav
+    training_stage: 1

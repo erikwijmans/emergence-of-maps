@@ -22,19 +22,18 @@ export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu/nvidia-opengl:${LD_LIBRARY_PATH
 export GLOG_minloglevel=2
 export MAGNUM_LOG=quiet
 
-SIM_GPU_IDS="1"
-PTH_GPU_ID="1"
+SIM_GPU_IDS="0"
+PTH_GPU_ID="0"
 SENSOR_TYPES="RGB_SENSOR"
-NUM_PROCESSES=6
+NUM_PROCESSES=8
 CHECKPOINT_MODEL_DIR="data/checkpoints/gibson-public-explore-controller-512-rgb-r${SLURM_ARRAY_TASK_ID}"
 CHECKPOINT_MODEL_DIR="data/checkpoints/gibson-public-flee-hrl-rgb-r5"
-CHECKPOINT_MODEL_DIR="data/checkpoints/gibson-2plus-resnet50-lstm1024-depth"
-# CHECKPOINT_MODEL_DIR="data/checkpoints/mp3d-gibson-2plus-resnet50-lstm1024-speedmaster-rgb"
+CHECKPOINT_MODEL_DIR="data/checkpoints/gibson-2plus-resnet50-frn-depth"
+CHECKPOINT_MODEL_DIR="data/checkpoints/mp3d-gibson-all-loopnav-stage-2-trained-state-blind"
 ENV_NAME=$(basename ${CHECKPOINT_MODEL_DIR})
 # ENV_NAME="testing"
-MAX_EPISODE_TIMESTEPS=500
-TASK_CONFIG="tasks/gibson-public.pointnav.yaml"
-NAV_TASK="pointnav"
+TASK_CONFIG="tasks/loopnav/mp3d-gibson.loopnav.yaml"
+NAV_TASK="loopnav"
 
 if [ ${NAV_TASK} == "loopnav" ]
 then
@@ -47,9 +46,10 @@ else
 fi
 rm ${LOG_FILE}
 
-COUNT_TEST_EPISODES=994
+COUNT_TEST_EPISODES=3996
+# COUNT_TEST_EPISODES=994
 VIDEO=0
-OUT_DIR_VIDEO="/private/home/akadian/navigation-analysis/navigation-analysis-habitat/eval-videos-${NAV_TASK}"
+OUT_DIR_VIDEO="/private/home/erikwijmans/projects/navigation-analysis-habitat/data/eval/videos/${ENV_NAME}"
 
 # for i in 1 2 4 8 16 32 64 96 128 192 256 512
 # do
