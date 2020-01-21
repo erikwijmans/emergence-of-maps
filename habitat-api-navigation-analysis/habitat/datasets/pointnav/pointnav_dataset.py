@@ -255,11 +255,14 @@ class PointNavDatasetOTFV1(PointNavDatasetV1):
         self._steps_taken += 1
 
 
-class Stage2LoopNavDataset(PointNavDatasetOTFV1):
+class Stage2Dataset(PointNavDatasetOTFV1):
     def __init__(self, config: Config = None) -> None:
         super().__init__(config)
         self._config = config
         self._path = config.POINTNAVV1.EPISODE_PATH
+        self._task_type = config.POINTNAVV1.TASK_TYPE
+
+        assert self._task_type in {"loopnav", "teleportnav"}
 
         f = osp.join(self._path, f"{self.current_scene}.lmdb")
         assert osp.exists(f), f"{f} does not exist"
@@ -267,13 +270,12 @@ class Stage2LoopNavDataset(PointNavDatasetOTFV1):
         self._load_db(f)
 
     def _load_db(self, f):
-        self._db = []
-        with lmdb.open(f, map_size=1 << 34) as lmdb_env:
-            self._len = lmdb_env.stat()["entries"]
-            with lmdb_env.begin(buffers=True) as txn:
-                for ep_id in range(self._len):
-                    ep = msgpack.unpackb(txn.get(str(ep_id).encode()), raw=False)
-                    self._db.append(ep)
+        self._lmdb_env = lmdb.open(f, map_size=1 << 34, readonly=True, lock=False)
+        self._len = self._lmdb_env.stat()["entries"]
+
+    def _read_entry(self, idx):
+        with self._lmdb_env.begin(buffers=True) as txn:
+            return msgpack.unpackb(txn.get(str(idx).encode()), raw=False)
 
     def gen_episode(self):
         if self._steps_taken >= self.next_shuffle:
@@ -286,19 +288,33 @@ class Stage2LoopNavDataset(PointNavDatasetOTFV1):
             self._load_db(f)
 
         ep_id = random.randint(0, self._len - 1)
-        ep = self._db[ep_id]
-        goal = NavigationGoal(**ep["orig_goal"])
-        goal.position = ep["orig_start_position"]
+        ep = self._read_entry(ep_id)
 
-        nav_ep = NavigationEpisode(
-            episode_id=str(ep_id),
-            goals=[goal],
-            scene_id=self.scene_paths[self.current_scene],
-            start_position=ep["loop_start_position"],
-            start_rotation=ep["loop_start_rotation"],
-            shortest_paths=None,
-            info=dict(geodesic_distance=ep["loop_geodesic_distance"]),
-        )
+        if self._task_type == "loopnav":
+            goal = NavigationGoal(**ep["orig_goal"])
+            goal.position = ep["orig_start_position"]
+
+            nav_ep = NavigationEpisode(
+                episode_id=str(ep_id),
+                goals=[goal],
+                scene_id=self.scene_paths[self.current_scene],
+                start_position=ep["loop_start_position"],
+                start_rotation=ep["loop_start_rotation"],
+                shortest_paths=None,
+                info=dict(geodesic_distance=ep["loop_geodesic_distance"]),
+            )
+        else:
+            goal = NavigationGoal(**ep["orig_goal"])
+
+            nav_ep = NavigationEpisode(
+                episode_id=str(ep_id),
+                goals=[goal],
+                scene_id=self.scene_paths[self.current_scene],
+                start_position=ep["orig_start_position"],
+                start_rotation=ep["orig_start_rotation"],
+                shortest_paths=None,
+                info=dict(geodesic_distance=ep["orig_geodesic_distance"]),
+            )
 
         nav_ep.trained_initial_hidden_state = ep["hidden_state"]
         nav_ep.random_initial_hidden_state = ep["random_hidden_state"]

@@ -11,7 +11,7 @@ from habitat.tasks.nav.nav_task import NavigationEpisode, NavigationGoal
 # from utils.visualize.gen_video import make_path_video, make_greedy_path_video
 
 GEODESIC_TO_EUCLID_RATIO_THRESHOLD = 1.1
-NUMBER_RETRIES_PER_TARGET = 10
+NUMBER_RETRIES_PER_TARGET = 100
 NEAR_DIST_LIMIT = 2.5
 FAR_DIST_LIMIT = 30
 ISLAND_RADIUS_LIMIT = 1.5
@@ -134,6 +134,9 @@ def generate_pointnav_episode(pf, scene, num_episodes=-1, init_orientation="rand
         retry_count += 1
 
         target_position = pf.get_random_navigable_point()
+        if not pf.is_navigable(target_position):
+            continue
+
         # print("TARGET radius: ", env._sim._sim.pathfinder.island_radius(
         #    target_position), target_position[1])
         if pf.island_radius(target_position) < ISLAND_RADIUS_LIMIT:
@@ -142,6 +145,8 @@ def generate_pointnav_episode(pf, scene, num_episodes=-1, init_orientation="rand
 
         for retry in range(NUMBER_RETRIES_PER_TARGET):
             source_position = pf.get_random_navigable_point()
+            if not pf.is_navigable(source_position):
+                continue
             # print("source radius: ", env._sim._sim.pathfinder.island_radius(
             #    source_position), source_position[1])
             is_compatible, dist = is_compatible_episode(

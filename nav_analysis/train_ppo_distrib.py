@@ -22,6 +22,7 @@ from habitat import logger
 from nav_analysis.rl.ppo import PPO, Policy, RolloutStorage
 from nav_analysis.rl.ppo.ant_policy import AntPolicy
 from nav_analysis.rl.ppo.two_agent_policy import TwoAgentPolicy
+from nav_analysis.rl.ppo.memory_limited_policy import MemoryLimitedPolicy
 from nav_analysis.rl.ppo.utils import (
     batch_obs,
     ppo_args,
@@ -147,11 +148,13 @@ def main():
             norm_visual_inputs=args.model.norm_visual_inputs,
             two_headed=args.model.two_headed,
         )
-        actor_critic = (
-            TwoAgentPolicy(**policy_kwargs)
-            if args.model.double_agent
-            else Policy(**policy_kwargs)
-        )
+        if args.model.double_agent:
+            actor_critic = TwoAgentPolicy(**policy_kwargs)
+        elif args.model.max_memory_length:
+            policy_kwargs["max_memory_length"] = args.model.max_memory_length
+            actor_critic = MemoryLimitedPolicy(**policy_kwargs)
+        else:
+            actor_critic = Policy(**policy_kwargs)
 
         #  actor_critic = AntPolicy(**policy_kwargs)
 
@@ -367,8 +370,18 @@ def main():
                         1 - update / args.ppo.num_updates
                     )
 
+                if update >= args.ddppo.num_steps_ramp_updates:
+                    actual_steps = args.ppo.num_steps
+                else:
+                    actual_steps = int(
+                        args.ddppo.num_steps_start
+                        + (args.ppo.num_steps - args.ddppo.num_steps_start)
+                        * update
+                        / (args.ddppo.num_steps_ramp_updates)
+                    )
+
                 actor_critic.eval()
-                for step in range(args.ppo.num_steps):
+                for step in range(actual_steps):
                     t_sample_action = time()
                     # sample actions
                     with torch.no_grad():

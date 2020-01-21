@@ -11,6 +11,8 @@ import os
 import os.path as osp
 import random
 import time
+import gzip
+import json
 
 import imageio
 import numpy as np
@@ -36,6 +38,24 @@ from nav_analysis.rl.rnn_memory_buffer import RNNMemoryBuffer
 from nav_analysis.train_ppo import LoopNavRLEnv, NavRLEnv, make_env_fn
 
 CFG_DIR = osp.join(osp.dirname(nav_analysis.__file__), "configs")
+
+
+class StreamingMean:
+    def __init__(self):
+        self._count = 0
+        self._mean = 0
+
+    def add(self, v):
+        if v is None:
+            return
+
+        _sum = self._mean * self._count + v
+        self._count += 1
+        self._mean = _sum / self._count
+
+    @property
+    def mean(self):
+        return self._mean
 
 
 if getpass.getuser() == "erikwijmans":
@@ -159,7 +179,10 @@ def construct_val_envs(args):
 
         if args.task.nav_task in ["loopnav", "teleportnav"]:
             config_env.SIMULATOR.AGENT_0.TURNAROUND = True
-            config_env.TASK.MEASUREMENTS = ["LOOPSPL", "LOOP_D_DELTA", "LOOP_COMPARE"]
+            config_env.TASK.MEASUREMENTS = [
+                "LOOPSPL",
+                "LOOP_D_DELTA",
+            ]  # , "LOOP_COMPARE"]
             config_env.TASK.LOOPSPL.BREAKDOWN_METRIC = True
             config_env.TASK.LOOPNAV_GIVE_RETURN_OBS = (
                 args.task.loopnav_give_return_inputs
@@ -189,6 +212,7 @@ def construct_val_envs(args):
         config_env.ENVIRONMENT.MAX_EPISODE_STEPS = args.task.max_episode_timesteps
 
         config_env.TASK.VERBOSE = args.task.nav_env_verbose
+        config_env.TASK.MEASUREMENTS.append("GEO_DISTANCES")
 
         config_env.freeze()
         env_configs.append(config_env)
@@ -290,7 +314,7 @@ def main():
             trained_args.ppo.num_processes = args.num_processes
 
             trained_args.task.nav_task = args.nav_task
-            trained_args.task.max_episode_timesteps = 2000
+            trained_args.task.max_episode_timesteps = 1000
 
             if trained_args.task.nav_task == "pointnav":
                 key_spl = "spl"
@@ -298,6 +322,7 @@ def main():
                 key_spl = "loop_spl"
 
             envs = construct_val_envs(trained_args)
+
             policy_kwargs = dict(
                 observation_space=envs.observation_spaces[0],
                 action_space=envs.action_spaces[0],
@@ -309,12 +334,15 @@ def main():
                 resnet_baseplanes=trained_args.model.resnet_baseplanes,
                 backbone=trained_args.model.backbone,
                 task=trained_args.task.nav_task
-                if trained_args.training_stage == -1
+                if trained_args.task.training_stage == -1
                 else "loopnav",
                 norm_visual_inputs=trained_args.model.norm_visual_inputs,
                 two_headed=trained_args.model.two_headed,
             )
             if trained_args.task.training_stage == 2:
+                policy_kwargs[
+                    "stage_2_state_type"
+                ] = trained_args.stage_2_args.state_type
                 actor_critic = TwoAgentPolicy(**policy_kwargs)
                 stage_1_state = torch.load(
                     trained_args.stage_2_args.stage_1_model, map_location="cpu"
@@ -329,6 +357,22 @@ def main():
                             idx = k.find(".")
                             k = k[0 : idx + 1] + f"{stage}." + k[idx + 1 :]
 
+                            net_state[k] = v
+
+                if trained_args.stage_2_args.state_type == "random":
+                    random_weights_state = torch.load(
+                        osp.join(
+                            osp.dirname(trained_args.stage_2_args.stage_1_model),
+                            "episodes",
+                            "random_weights_state.ckpt",
+                        ),
+                        map_location="cpu",
+                    )
+
+                    for k, v in random_weights_state.items():
+                        if k.startswith("net."):
+                            k = k.replace("net.", "")
+                            k = "random_encoding_net." + k
                             net_state[k] = v
 
                 actor_critic.net.load_state_dict(net_state)
@@ -392,6 +436,7 @@ def main():
             with tqdm.tqdm(total=args.count_test_episodes, ncols=0) as pbar:
                 total_episode_counts = 0
                 stats_episodes = {}
+                stats_means = {}
 
                 while total_episode_counts < args.count_test_episodes:
                     current_episodes = envs.current_episodes()
@@ -466,28 +511,12 @@ def main():
                                 res["stage_2_d_delta"] = infos[i]["loop_d_delta"][
                                     "stage_2"
                                 ]
-                                res["loop_compare"] = infos[i]["loop_compare"]
+                                res["loop_compare"] = infos[i].get("loop_compare", -1)
 
-                                logger.info(
-                                    "EP {}, S1 SPL: {:.3f}, "
-                                    "S2 SPL: {:.3f}, "
-                                    "T SPL: {:.3f}".format(
-                                        current_episodes[i].episode_id,
-                                        infos[i][key_spl]["stage_1_spl"],
-                                        infos[i][key_spl]["stage_2_spl"],
-                                        infos[i][key_spl]["total_spl"],
-                                    )
-                                )
-
-                                logger.info(
-                                    "Num parallel envs: {}".format(envs.num_envs)
-                                )
-
-                                stats_episodes[current_episodes[i].episode_id] = res
                             elif trained_args.task.nav_task == "pointnav":
-                                stats_episodes[current_episodes[i].episode_id] = {
+                                res = {
                                     key_spl: infos[i][key_spl],
-                                    "success": (infos[i][key_spl] > 0),
+                                    "success": int(infos[i][key_spl] > 0),
                                     "d_delta": infos[i]["loop_d_delta"]["stage_1"],
                                 }
 
@@ -499,13 +528,26 @@ def main():
                                     )
                                 )
                             elif trained_args.task.nav_task == "flee":
-                                stats_episodes[current_episodes[i].episode_id] = {
-                                    "flee_dist": infos[i]["flee_distance"]
-                                }
+                                res = {"flee_dist": infos[i]["flee_distance"]}
                             elif trained_args.task.nav_task == "explore":
-                                stats_episodes[current_episodes[i].episode_id] = {
-                                    "visited": infos[i]["visited"]
-                                }
+                                res = {"visited": infos[i]["visited"]}
+
+                            res["initial_l2_to_goal"] = infos[i]["geo_distances"][
+                                "initial_l2_to_goal"
+                            ]
+                            res["initial_geo_to_goal"] = infos[i]["geo_distances"][
+                                "initial_geo_to_goal"
+                            ]
+
+                            stats_episodes[current_episodes[i].episode_id] = res
+
+                            for k, v in stats_episodes[
+                                current_episodes[i].episode_id
+                            ].items():
+                                if k not in stats_means:
+                                    stats_means[k] = StreamingMean()
+
+                                stats_means[k].add(v)
 
                             if args.video == 1:
                                 if isinstance(infos[i][key_spl], dict):
@@ -584,41 +626,6 @@ def main():
 
                     current_episode_reward *= not_done_masks
 
-                    def _avg(k):
-                        return "{:.3f}".format(
-                            py_()
-                            .values()
-                            .map(k)
-                            .thru(lambda lst: np.array(lst, dtype=np.float32).mean())(
-                                stats_episodes
-                            )
-                            if len(stats_episodes) > 0
-                            else 0.0
-                        )
-
-                    if trained_args.task.nav_task == "pointnav":
-                        pbar.set_postfix(
-                            spl=_avg("spl"),
-                            success=_avg("success"),
-                            d_delta=_avg("d_delta"),
-                        )
-
-                    elif trained_args.task.nav_task in {"loopnav", "teleportnav"}:
-
-                        pbar.set_postfix(
-                            total_spl=_avg("total_spl"),
-                            success=_avg("success"),
-                            stage_1_spl=_avg("stage_1_spl"),
-                            stage_2_spl=_avg("stage_2_spl"),
-                            stage_1_d_delta=_avg("stage_1_d_delta"),
-                            stage_2_d_delta=_avg("stage_2_d_delta"),
-                            loop_compare=_avg("loop_compare"),
-                        )
-                    elif trained_args.task.nav_task == "flee":
-                        pbar.set_postfix(flee_dist=_avg("flee_dist"))
-                    elif trained_args.task.nav_task == "explore":
-                        pbar.set_postfix(visited=_avg("visited"))
-
                     if len(envs_to_pause) > 0:
                         state_index = list(range(envs.num_envs))
                         for idx in reversed(envs_to_pause):
@@ -640,6 +647,31 @@ def main():
                         if args.video == 1:
                             rgb_frames = [rgb_frames[idx] for idx in state_index]
 
+                    def _avg(k):
+                        return stats_means[k].mean if k in stats_means else 0.0
+
+                    if trained_args.task.nav_task == "pointnav":
+                        pbar.set_postfix(
+                            spl=_avg("spl"),
+                            success=_avg("success"),
+                            d_delta=_avg("d_delta"),
+                        )
+
+                    elif trained_args.task.nav_task in {"loopnav", "teleportnav"}:
+                        pbar.set_postfix(
+                            total_spl=_avg("total_spl"),
+                            success=_avg("success"),
+                            stage_1_spl=_avg("stage_1_spl"),
+                            stage_2_spl=_avg("stage_2_spl"),
+                            stage_1_d_delta=_avg("stage_1_d_delta"),
+                            stage_2_d_delta=_avg("stage_2_d_delta"),
+                            loop_compare=_avg("loop_compare"),
+                        )
+                    elif trained_args.task.nav_task == "flee":
+                        pbar.set_postfix(flee_dist=_avg("flee_dist"))
+                    elif trained_args.task.nav_task == "explore":
+                        pbar.set_postfix(visited=_avg("visited"))
+
             logger.info("Checkpoint {} results:".format(current_ckpt))
 
             if trained_args.task.nav_task in {"loopnav", "teleportnav"}:
@@ -652,15 +684,8 @@ def main():
                         total_success / len(stats_episodes)
                     )
                 )
-                total_stage_1_spl = 0.0
-                total_stage_2_spl = 0.0
-
-                for k, v in stats_episodes.items():
-                    total_stage_1_spl += v["stage_1_spl"]
-                    total_stage_2_spl += v["stage_2_spl"]
-
-                avg_stage_1_spl = total_stage_1_spl / len(stats_episodes)
-                avg_stage_2_spl = total_stage_2_spl / len(stats_episodes)
+                avg_stage_1_spl = stats_means["stage_1_spl"].mean
+                avg_stage_2_spl = stats_means["stage_2_spl"].mean
 
                 logger.info(
                     "Average episode stage-1 SPL: {:.6f}".format(avg_stage_1_spl)
@@ -703,38 +728,9 @@ def main():
                 )
 
             envs.close()
-            continue
 
-            if args.max_memory_length is not None:
-                import json
-                import pprint
-                import gzip
-
-                res = dict(mem_len=[], spl=[], success=[])
-                if osp.exists("spl_vs_mem_len.json.gz"):
-                    with gzip.open("spl_vs_mem_len.json.gz", "rt") as f:
-                        res = json.load(f)
-
-                for v in stats_episodes.values():
-                    res["mem_len"].append(args.max_memory_length)
-                    res["spl"].append(v["spl"])
-                    res["success"].append(int(v["success"]))
-
-                with gzip.open("spl_vs_mem_len.json.gz", "wt") as f:
-                    json.dump(res, f)
-
-                print("=" * 10)
-                print(
-                    json.dumps(
-                        dict(
-                            spl=avg_spl,
-                            success=total_success / len(stats_episodes),
-                            mem_len=args.max_memory_length,
-                        )
-                    )
-                )
-                print("=" * 10)
-                return
+            with gzip.open("episode_stats.json.gz", "wt") as f:
+                json.dump(stats_episodes, f)
 
 
 if __name__ == "__main__":

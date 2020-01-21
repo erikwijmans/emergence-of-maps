@@ -1,30 +1,62 @@
-from itertools import repeat
-
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torch.jit import Final
 
 torch.backends.cudnn.enabled = True
 torch.backends.cudnn.benchmark = True
 
 
+class TLUFunctional(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x, tau, inplace):
+        if inplace:
+            ctx.mark_dirty(x)
+            output = x
+        else:
+            output = x.clone()
+
+        torch.max(x, tau, out=output)
+
+        ctx.save_for_backward(x, tau)
+
+        return output
+
+    @staticmethod
+    def backward(ctx, grad_out):
+        x_grad = grad_out.clone()
+        tau_grad = grad_out.clone()
+
+        x, tau = ctx.saved_tensors
+
+        x_grad[x <= tau] = 0
+        tau_grad[x > tau] = 0
+
+        return x_grad, tau_grad.sum(0), None
+
+
+tlu_functional = TLUFunctional.apply
+
+
 class TLU(nn.Module):
-    def __init__(self, nchannel: int):
+    _inplace: Final[bool]
+
+    def __init__(self, nchannel: int, inplace: bool = True):
         super().__init__()
         self.tau = nn.Parameter(torch.zeros(nchannel, 1))
+        self._inplace = inplace
 
     def forward(self, x):
-        orig_shape = x.shape
-        x = x.view(orig_shape[0], orig_shape[1], -1)
+        orig_size = x.size()
+        x = x.view(orig_size[0], orig_size[1], -1)
 
-        return torch.max(x, self.tau).view(orig_shape)
+        res = tlu_functional(x, self.tau, self._inplace)
+
+        return res.view(orig_size)
 
 
 class FRNLayer(nn.Module):
     _affine: Final[bool]
-    learnable_eps: Final[bool]
-    nchannel: Final[int]
+    _learnable_eps: Final[bool]
     _tlu: Final[bool]
 
     def __init__(
@@ -53,8 +85,8 @@ class FRNLayer(nn.Module):
             self.tlu_act = TLU(nchannel)
 
     def forward(self, x):
-        orig_shape = x.shape
-        x = x.view(orig_shape[0], orig_shape[1], -1)
+        orig_size = x.size()
+        x = x.view(orig_size[0], orig_size[1], -1)
         nu2 = x.pow(2).mean(dim=2, keepdim=True)
 
         eps = self.eps
@@ -69,4 +101,4 @@ class FRNLayer(nn.Module):
         if self._tlu:
             x = self.tlu_act(x)
 
-        return x.view(orig_shape)
+        return x.view(orig_size)

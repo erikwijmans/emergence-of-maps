@@ -577,7 +577,7 @@ class InitialHiddenState(habitat.Sensor):
         self._sim = sim
         self._shape = tuple(config.SHAPE)
         self._state_type = config.STATE_TYPE
-        assert self._state_type in {"trained", "random"}
+        assert self._state_type in {"trained", "random", "zero"}
         super().__init__(config=config)
 
     def _get_uuid(self, *args: Any, **kwargs: Any):
@@ -592,8 +592,10 @@ class InitialHiddenState(habitat.Sensor):
     def get_observation(self, observations, episode):
         if self._state_type == "trained":
             return episode.trained_initial_hidden_state
-        else:
+        elif self._state_type == "random":
             return episode.random_initial_hidden_state
+        else:
+            return np.zeros(self._shape, dtype=np.float32)
 
 
 class DistanceToGoal(habitat.Sensor):
@@ -762,11 +764,14 @@ class LoopSPL(habitat.Measure):
             for i in range(2)
         ]
 
-        assert np.all(np.array(stage_spls) <= 1.0)
+        if stage_spls[0] == 0.0:
+            stage_spls[1] = None
 
         if self._breakdown_metric:
             self._metric = {
-                "total_spl": np.sqrt(np.prod(stage_spls)),
+                "total_spl": np.sqrt(np.prod(stage_spls))
+                if stage_spls[1] is not None
+                else stage_spls[0],
                 "stage_1_spl": stage_spls[0],
                 "stage_2_spl": stage_spls[1],
             }
@@ -786,7 +791,7 @@ class LoopDDelta(habitat.Measure):
 
     def reset_metric(self, episode):
         self._episode_stage = 0
-        self._stage_d_deltas = [0.0, 0.0]
+        self._stage_d_deltas = [0.0, None]
         self._start_end_episode_distances = [
             episode.info["geodesic_distance"],
             episode.info["geodesic_distance"],
@@ -928,13 +933,19 @@ class GeoDistances(habitat.Measure):
         return "geo_distances"
 
     def reset_metric(self, episode: NavigationEpisode):
-        self._start_pos = episode.start_position
-        self._goal_pos = episode.goals[0].position
+        self._start_pos = np.array(episode.start_position)
+        self._goal_pos = np.array(episode.goals[0].position)
+        self._metric = {}
         self.update_metric(episode, None)
 
-    def update_metric(self, episode, action):
-        self._metric = {}
+        self._metric["initial_geo_to_goal"] = self._sim.geodesic_distance(
+            self._start_pos, self._goal_pos,
+        )
+        self._metric["initial_l2_to_goal"] = np.linalg.norm(
+            self._goal_pos - self._start_pos
+        )
 
+    def update_metric(self, episode, action):
         state = self._sim.get_agent_state()
         self._metric["dist_to_start"] = self._sim.geodesic_distance(
             state.position, self._start_pos

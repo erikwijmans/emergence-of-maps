@@ -30,8 +30,72 @@ from nav_analysis.rl.ppo.utils import (
     ppo_args,
     update_linear_schedule,
 )
+from gym import spaces
 
 CFG_DIR = osp.join(osp.dirname(nav_analysis.__file__), "configs")
+
+
+class ObsStackEnv(habitat.RLEnv):
+    def __init__(self, env: habitat.RLEnv, num_stacks: int = 1):
+        self._env = env
+        self.num_stacks = num_stacks
+        self._stack = {}
+        self._flattened_stack = {}
+
+        self.observation_space = self._env.observation_space
+        for k, v in self.observation_space.spaces.items():
+            new_shape = list(v.shape) + [num_stacks]
+            v.shape = tuple(new_shape)
+            self.observation_space.spaces[k] = v
+
+        self.observation_space.spaces["prev_action"] = spaces.Box(
+            low=0, high=100, shape=(1, num_stacks), dtype=np.int64
+        )
+
+        self.action_space = self._env.action_space
+
+    def reset(self):
+        for k, v in self._stack.items():
+            self._stack[k] = deque(maxlen=self.num_stacks)
+
+        for k, v in self._flattened_stack.items():
+            self._flattened_stack[k] = np.zeros_like(v)
+
+        observations = self._env.reset()
+        observations["prev_action"] = np.array([self.action_space.n])
+
+        self.update_stack(observations)
+
+        return self.flatten_stack()
+
+    def update_stack(self, observations):
+        for k, v in observations.items():
+            if k not in self._stack:
+                self._stack[k] = deque(maxlen=self.num_stacks)
+
+            self._stack[k].append(v)
+
+    def flatten_stack(self):
+        for k, v in self._stack.items():
+            if k not in self._flattened_stack:
+                self._flattened_stack[k] = np.stack(
+                    [np.zeros_like(v[0]) for _ in range(self.num_stacks)], axis=-1
+                )
+
+            for i, ele in enumerate(v):
+                self._flattened_stack[k][..., i] = ele
+
+        return self._flattened_stack
+
+    def step(self, action):
+        observations, reward, done, info = self._env.step(action)
+        observations["prev_action"] = np.array([action + 1])
+        self.update_stack(observations)
+
+        return self.flatten_stack(), reward, done, info
+
+    def close(self):
+        self._env.close()
 
 
 class NavRLEnv(habitat.RLEnv):
@@ -350,6 +414,9 @@ def make_env_fn(args, config_env, config_baseline, shuffle_interval, rank):
 
     env.seed(rank)
 
+    if args.model.max_memory_length:
+        env = ObsStackEnv(env, args.model.max_memory_length)
+
     return env
 
 
@@ -397,10 +464,11 @@ def construct_envs(
             config_env.DATASET.TYPE = "PointNavOTF-v1"
 
         if args.task.training_stage == 2:
-            config_env.DATASET.TYPE = "Stage2LoopNav"
+            config_env.DATASET.TYPE = "Stage2"
             config_env.DATASET.POINTNAVV1.EPISODE_PATH = osp.realpath(
                 osp.join(osp.dirname(args.stage_2_args.stage_1_model), "episodes")
             )
+            config_env.DATASET.POINTNAVV1.TASK_TYPE = args.stage_2_args.stage_2_task
             config_env.TASK.SENSORS = list(
                 set(config_env.TASK.SENSORS + ["INITIAL_HIDDEN_STATE"])
             )

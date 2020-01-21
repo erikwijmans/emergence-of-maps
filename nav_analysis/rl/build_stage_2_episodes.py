@@ -25,6 +25,8 @@ from nav_analysis.rl.ppo.policy import Policy
 from nav_analysis.rl.ppo.utils import batch_obs
 from nav_analysis.train_ppo import construct_envs
 
+fairtask.queue.TASK_MAX_RETRIES = 30
+
 msgpack_numpy.patch()
 
 CFG_DIR = osp.join(osp.dirname(nav_analysis.__file__), "configs")
@@ -64,7 +66,7 @@ def build_parser():
 
 
 @qs.task("slurm")
-def collect_traj_for_scene(args, trained_args, scene):
+def collect_traj_for_scene(args, trained_args, random_weights_state, scene):
     device = torch.device("cuda", random.randint(0, torch.cuda.device_count() - 1))
     trained_ckpt = torch.load(args.model_path, map_location="cpu")
 
@@ -101,6 +103,9 @@ def collect_traj_for_scene(args, trained_args, scene):
         actor_critic.eval()
 
         random_agent = Policy(**policy_args)
+        random_agent.load_state_dict(
+            torch.load(random_weights_state, map_location="cpu")
+        )
         random_agent = random_agent.to(device)
         random_agent.eval()
 
@@ -130,9 +135,7 @@ def collect_traj_for_scene(args, trained_args, scene):
         )
 
         dones = [True for _ in range(args.num_processes)]
-        prev_infos = None
         infos = None
-        episode_lens = [0.0] * args.num_processes
 
         current_episodes = envs.current_episodes()
         while len(trajectories) < args.sample_per_scene:
@@ -155,7 +158,6 @@ def collect_traj_for_scene(args, trained_args, scene):
 
             outputs = envs.step([a[0].item() for a in actions])
 
-            prev_infos = infos
             observations, rewards, dones, infos = [list(x) for x in zip(*outputs)]
             batch = batch_obs(observations)
             for sensor in batch:
@@ -261,12 +263,41 @@ async def main():
     basic_config.freeze()
     scenes = PointNavDatasetV1.get_scenes_to_load(basic_config.DATASET)
 
+    with construct_envs(
+        trained_args, "train", dset_measures=False, scenes=[scenes[0]]
+    ) as envs:
+        policy_args = dict(
+            observation_space=envs.observation_spaces[0],
+            action_space=envs.action_spaces[0],
+            hidden_size=trained_args.model.hidden_size,
+            num_recurrent_layers=trained_args.model.num_recurrent_layers,
+            blind=trained_args.model.blind,
+            use_aux_losses=False,
+            rnn_type=trained_args.model.rnn_type,
+            resnet_baseplanes=trained_args.model.resnet_baseplanes,
+            backbone=trained_args.model.backbone,
+            two_headed=trained_args.model.two_headed,
+            task=trained_args.task.nav_task
+            if trained_args.task.training_stage == -1
+            else "loopnav",
+        )
+
+        actor_critic = Policy(**policy_args)
+
+        random_weights_state = osp.join(
+            osp.dirname(args.model_path), "episodes", f"random_weights_state.ckpt"
+        )
+        os.makedirs(osp.dirname(random_weights_state), exist_ok=True)
+        torch.save(actor_critic.state_dict(), random_weights_state)
+
     tasks = []
     for s in scenes:
         output_path = osp.join(osp.dirname(args.model_path), "episodes", f"{s}.lmdb")
 
-        if not osp.exists(output_path) or True:
-            tasks.append(collect_traj_for_scene(args, trained_args, s))
+        if not osp.exists(output_path):
+            tasks.append(
+                collect_traj_for_scene(args, trained_args, random_weights_state, s)
+            )
 
     with tqdm.tqdm(total=len(tasks)) as pbar:
         for task in asyncio.as_completed(tasks):

@@ -17,6 +17,7 @@ from nav_analysis.rl.dpfrl import DPFRL
 from nav_analysis.rl.layer_norm_lstm import LayerNormLSTM
 from nav_analysis.rl.ppo.utils import CustomFixedCategorical, Flatten
 from nav_analysis.rl.running_mean_and_var import ImageAutoRunningMeanAndVar
+from nav_analysis.rl.ppo.policy import Net
 
 
 class TwoAgentCategoricalNet(nn.Module):
@@ -70,12 +71,13 @@ class TwoAgentPolicy(nn.Module):
         norm_visual_inputs=False,
         two_headed=False,
         share_grad=False,
+        stage_2_state_type="trained",
     ):
         super().__init__()
         assert not two_headed
         self.dim_actions = action_space.n
 
-        self.net = Net(
+        self.net = TwoAgentNet(
             observation_space=observation_space,
             hidden_size=hidden_size,
             num_recurrent_layers=num_recurrent_layers,
@@ -86,6 +88,7 @@ class TwoAgentPolicy(nn.Module):
             norm_visual_inputs=norm_visual_inputs,
             task=task,
             share_grad=share_grad,
+            stage_2_state_type=stage_2_state_type,
         )
 
         self.action_distribution = TwoAgentCategoricalNet(
@@ -125,6 +128,7 @@ class TwoAgentPolicy(nn.Module):
     def evaluate_actions(
         self, observations, rnn_hidden_states, prev_actions, masks, action
     ):
+        raise NotImplementedError()
         value, actor_features, rnn_hidden_states, cnn_feats = self.net(
             observations, rnn_hidden_states, prev_actions, masks
         )
@@ -148,7 +152,7 @@ class TwoAgentPolicy(nn.Module):
         self.action_distribution.sync_params()
 
 
-class Net(nn.Module):
+class TwoAgentNet(nn.Module):
     """Network which passes the input image through CNN and concatenates
     goal vector with CNN's output and passes that through RNN.
     """
@@ -165,8 +169,26 @@ class Net(nn.Module):
         norm_visual_inputs,
         task,
         share_grad,
+        stage_2_state_type,
     ):
         super().__init__()
+
+        self._stage_2_state_type = stage_2_state_type
+        if stage_2_state_type == "random":
+            self.random_encoding_net = Net(
+                observation_space,
+                hidden_size,
+                num_recurrent_layers,
+                blind,
+                rnn_type,
+                backbone,
+                resnet_baseplanes,
+                norm_visual_inputs,
+                task="loopnav",
+            )
+            for param in self.random_encoding_net.parameters():
+                param.requires_grad_(False)
+
         self._task = task
         self._share_grad = share_grad
 
@@ -247,7 +269,11 @@ class Net(nn.Module):
         if self._rnn_type == "DPFRL":
             return self.rnn.K
 
-        return self._num_recurrent_layers * (2 if "LSTM" in self._rnn_type else 1)
+        return (
+            self._num_recurrent_layers
+            * (2 if "LSTM" in self._rnn_type else 1)
+            * (2 if self._stage_2_state_type == "random" else 1)
+        )
 
     def layer_init(self):
         if False and self.cnn is not None:
@@ -296,9 +322,35 @@ class Net(nn.Module):
 
     def forward_rnn(self, x, hidden_states, masks, prev_actions, stage):
         if x.size(0) == hidden_states.size(1):
+            if self._stage_2_state_type == "random":
+                random_hidden_states = hidden_states[self.num_recurrent_layers // 2 :]
+                hidden_states = hidden_states[0 : self.num_recurrent_layers // 2]
+
             hidden_states = self._unpack_hidden(hidden_states)
             init_hidden = self._mask_hidden(hidden_states, masks.unsqueeze(0))
             x_0, hidden_states_0 = self.rnn[0](x.unsqueeze(0), init_hidden)
+
+            if self._stage_2_state_type == "trained":
+                pass
+            elif self._stage_2_state_type == "random":
+                init_hidden = self._pack_hidden(init_hidden)
+                init_hidden = torch.where(
+                    prev_actions == 3,
+                    random_hidden_states,
+                    init_hidden,
+                )
+                init_hidden = self._unpack_hidden(init_hidden)
+            elif self._stage_2_state_type == "zero":
+                init_hidden = self._pack_hidden(init_hidden)
+                init_hidden = torch.where(
+                    prev_actions == 3, torch.zeros_like(init_hidden), init_hidden
+                )
+                init_hidden = self._unpack_hidden(init_hidden)
+            else:
+                raise RuntimeError(
+                    f"Unknown stage_2_state_type: {self._stage_2_state_type}"
+                )
+
             x_1, hidden_states_1 = self.rnn[1](x.unsqueeze(0), init_hidden)
 
             hidden_states = torch.where(
@@ -306,6 +358,9 @@ class Net(nn.Module):
                 self._pack_hidden(hidden_states_0),
                 self._pack_hidden(hidden_states_1),
             )
+
+            if self._stage_2_state_type == "random":
+                hidden_states = torch.cat([hidden_states, random_hidden_states], dim=0)
 
             x = torch.where(stage == 0, x_0.squeeze(0), x_1.squeeze(0))
         else:
@@ -397,6 +452,19 @@ class Net(nn.Module):
         return x, hidden_states
 
     def forward(self, observations, rnn_hidden_states, prev_actions, masks):
+        if self._stage_2_state_type == "random":
+            (
+                _,
+                _,
+                rnn_hidden_states[self.num_recurrent_layers // 2 :],
+                _,
+            ) = self.random_encoding_net(
+                observations,
+                rnn_hidden_states[self.num_recurrent_layers // 2 :],
+                prev_actions,
+                masks,
+            )
+
         goal_observations = observations["pointgoal"]
         if self._old_goal_format:
             rho_obs = goal_observations[:, 0].clone()

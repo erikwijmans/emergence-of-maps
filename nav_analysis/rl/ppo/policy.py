@@ -8,13 +8,12 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torchvision
 
 import nav_analysis.rl.efficient_net
 import nav_analysis.rl.resnet
 from habitat.sims.habitat_simulator import SimulatorActions
 from nav_analysis.rl.dpfrl import DPFRL
-from nav_analysis.rl.frn_layer import TLU, FRNLayer
+from nav_analysis.rl.frn_layer import FRNLayer
 from nav_analysis.rl.layer_norm_lstm import LayerNormLSTM
 from nav_analysis.rl.ppo.utils import CategoricalNet, Flatten
 from nav_analysis.rl.running_mean_and_var import ImageAutoRunningMeanAndVar
@@ -175,7 +174,6 @@ class ResNetEncoder(nn.Module):
                 bias=False,
             ),
             FRNLayer(bn_size),
-            TLU(bn_size),
         )
 
     def forward(self, x):
@@ -285,7 +283,8 @@ class Net(nn.Module):
             self.cnn = nn.Sequential(
                 encoder,
                 Flatten(),
-                nn.Linear(np.prod(encoder.output_size), hidden_size),
+                nn.Linear(np.prod(encoder.output_size), hidden_size, bias=False),
+                nn.LayerNorm(hidden_size),
                 nn.ReLU(True),
             )
             rnn_input_size += self._hidden_size
@@ -296,7 +295,33 @@ class Net(nn.Module):
 
         self._rnn_type = rnn_type
         self._num_recurrent_layers = num_recurrent_layers
-        if rnn_type == "LN-LSTM":
+        if rnn_type is None:
+            print("NO RNN", flush=True)
+
+            class RNNDummy(nn.Module):
+                def __init__(self, rnn_input_size, hidden_size):
+                    super().__init__()
+                    self.layer_in = nn.Sequential(
+                        nn.Linear(rnn_input_size, hidden_size), nn.ReLU(True)
+                    )
+
+                    self.rnn = nn.Sequential(
+                        nn.Linear(hidden_size, hidden_size),
+                        nn.ReLU(True),
+                        nn.Linear(hidden_size, hidden_size, bias=False),
+                        nn.LayerNorm(hidden_size),
+                        nn.ReLU(True),
+                    )
+
+                def forward(self, x):
+                    x = self.layer_in(x)
+                    return self.rnn(x) + x
+
+            self.rnn = RNNDummy(rnn_input_size, hidden_size)
+
+            self._rnn_type = "None"
+            self._num_recurrent_layers = 1
+        elif rnn_type == "LN-LSTM":
             self.rnn = LayerNormLSTM(
                 rnn_input_size, hidden_size, num_layers=num_recurrent_layers
             )
@@ -512,10 +537,10 @@ class Net(nn.Module):
             goal_observations = torch.stack([rho_obs, phi_obs], -1)
 
         goal_observations = self.tgt_embed(goal_observations)
+
         start_tok = torch.full_like(
             prev_actions, 4 if "initial_hidden_state" in observations else 0
         )
-
         prev_actions_emb = self.prev_action_embedding(
             torch.where(masks == 1, prev_actions + 1, start_tok).squeeze(-1)
         )
@@ -543,9 +568,12 @@ class Net(nn.Module):
 
         x = torch.cat(x, dim=1)  # concatenate goal vector
 
-        x, rnn_hidden_states = self.forward_rnn(
-            x, rnn_hidden_states, masks, prev_actions, observations
-        )
+        if self._rnn_type == "None":
+            x = self.rnn(x)
+        else:
+            x, rnn_hidden_states = self.forward_rnn(
+                x, rnn_hidden_states, masks, prev_actions, observations
+            )
 
         if self._task == "pointnav":
             value = self.critic_linear(x)

@@ -6,5 +6,5 @@ ppo:
     num_updates: 15000
 
 stage_2_args:
-    state_type: trained
+    state_type: zero
     stage_1_model: /private/home/erikwijmans/projects/navigation-analysis-habitat/data/checkpoints/mp3d-gibson-all-loopnav-stage-1-v5-blind/ckpt.278.pth

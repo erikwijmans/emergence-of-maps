@@ -243,6 +243,7 @@ _C.DATASET.POINTNAVV1.DATA_PATH = (
 _C.DATASET.POINTNAVV1.CONTENT_SCENES = ["*"]
 _C.DATASET.POINTNAVV1.INIT_ORIENTATION = "random"
 _C.DATASET.POINTNAVV1.EPISODE_PATH = ""
+_C.DATASET.POINTNAVV1.TASK_TYPE = ""
 
 
 # -----------------------------------------------------------------------------

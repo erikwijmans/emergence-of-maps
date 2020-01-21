@@ -26,8 +26,8 @@ register_dataset(
 )
 
 register_dataset(
-    id_dataset="Stage2LoopNav",
-    entry_point="habitat.datasets.pointnav.pointnav_dataset:Stage2LoopNavDataset",
+    id_dataset="Stage2",
+    entry_point="habitat.datasets.pointnav.pointnav_dataset:Stage2Dataset",
 )
 
 __all__ = ["dataset_registry", "register_dataset", "make_dataset"]

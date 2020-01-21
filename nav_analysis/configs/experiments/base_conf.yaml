@@ -22,6 +22,8 @@ model:
     two_headed: False
     double_agent: False
 
+    max_memory_length: null
+
 optimizer:
     lr: 2.5e-4
     weight_decay: 0.0
@@ -50,6 +52,8 @@ ppo:
 
 ddppo:
     sync_frac: 0.6
+    num_steps_start: 8
+    num_steps_ramp_updates: 0
 
 logging:
     log_file: ???
@@ -82,3 +86,4 @@ task:
 stage_2_args:
     stage_1_model: ???
     state_type: trained
+    stage_2_task: loopnav

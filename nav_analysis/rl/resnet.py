@@ -1,10 +1,9 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import torch.utils.checkpoint
 from torch.autograd import Function
 
-from nav_analysis.rl.frn_layer import TLU, FRNLayer
+from nav_analysis.rl.frn_layer import FRNLayer
 
 use_checkpoint = False
 

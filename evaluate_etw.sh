@@ -25,15 +25,18 @@ export MAGNUM_LOG=quiet
 SIM_GPU_IDS="0"
 PTH_GPU_ID="0"
 SENSOR_TYPES="RGB_SENSOR"
-NUM_PROCESSES=8
 CHECKPOINT_MODEL_DIR="data/checkpoints/gibson-public-explore-controller-512-rgb-r${SLURM_ARRAY_TASK_ID}"
 CHECKPOINT_MODEL_DIR="data/checkpoints/gibson-public-flee-hrl-rgb-r5"
-CHECKPOINT_MODEL_DIR="data/checkpoints/gibson-2plus-resnet50-frn-depth"
-CHECKPOINT_MODEL_DIR="data/checkpoints/mp3d-gibson-all-loopnav-stage-2-trained-state-blind"
+CHECKPOINT_MODEL_DIR="data/checkpoints/gibson-2plus-resnet18-frn-step-ramp-no-memory-depth"
+CHECKPOINT_MODEL_DIR="data/checkpoints/mp3d-only-loopnav-stage-2-trained-state-blind"
+CHECKPOINT_MODEL_DIR="data/checkpoints/mp3d-gibson-all-loopnav-stage-2-random-state-blind"
+CHECKPOINT_MODEL_DIR="data/checkpoints/mp3d-gibson-all-pointnav-no-memory-blind"
 ENV_NAME=$(basename ${CHECKPOINT_MODEL_DIR})
 # ENV_NAME="testing"
-TASK_CONFIG="tasks/loopnav/mp3d-gibson.loopnav.yaml"
-NAV_TASK="loopnav"
+NUM_PROCESSES=18
+TASK_CONFIG="tasks/loopnav/mp3d.loopnav.yaml"
+# TASK_CONFIG="tasks/loopnav/gibson-public.loopnav.yaml"
+NAV_TASK="pointnav"
 
 if [ ${NAV_TASK} == "loopnav" ]
 then

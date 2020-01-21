@@ -4,14 +4,9 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-import os.path
-import sys
 
 import setuptools
 
-from version import VERSION  # noqa
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "habitat"))
 
 with open("README.md", encoding="utf8") as f:
     readme = f.read()
@@ -34,7 +29,7 @@ if __name__ == "__main__":
         name=DISTNAME,
         install_requires=REQUIREMENTS,
         packages=setuptools.find_packages(),
-        version=VERSION,
+        version="1.1",
         description=DESCRIPTION,
         long_description=LONG_DESCRIPTION,
         author=AUTHOR,
