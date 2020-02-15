@@ -25,7 +25,7 @@ TASK:
     TYPE: SPL
     SUCCESS_DISTANCE: 0.2
 DATASET:
-  TYPE: PointNavOTF-v1
+  TYPE: PointNav-v1
   SPLIT: train
   POINTNAVV1:
     DATA_PATH: 'data/datasets/pointnav/mp3d-gibson-all-train/v1/{split}/{split}.json.gz'

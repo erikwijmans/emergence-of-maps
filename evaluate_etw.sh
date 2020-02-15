@@ -13,10 +13,12 @@
 conda deactivate
 conda activate nav-analysis-base
 
+export PYTHONPATH=$(pwd)/habitat-api-navigation-analysis
+
 module purge
-module load cuda/10.0
-module load cudnn/v7.6-cuda.10.0
-module load NCCL/2.4.2-1-cuda.10.0
+module load cuda/10.1
+module load cudnn/v7.6.5.32-cuda.10.1
+module load NCCL/2.5.6-1-cuda.10.1
 
 export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu/nvidia-opengl:${LD_LIBRARY_PATH}
 export GLOG_minloglevel=2
@@ -30,13 +32,13 @@ CHECKPOINT_MODEL_DIR="data/checkpoints/gibson-public-flee-hrl-rgb-r5"
 CHECKPOINT_MODEL_DIR="data/checkpoints/gibson-2plus-resnet18-frn-step-ramp-no-memory-depth"
 CHECKPOINT_MODEL_DIR="data/checkpoints/mp3d-only-loopnav-stage-2-trained-state-blind"
 CHECKPOINT_MODEL_DIR="data/checkpoints/mp3d-gibson-all-loopnav-stage-2-random-state-blind"
-CHECKPOINT_MODEL_DIR="data/checkpoints/mp3d-gibson-all-pointnav-no-memory-blind"
+CHECKPOINT_MODEL_DIR="data/checkpoints/mp3d-gibson-all-loopnav-stage-2-trained-state-no-inputs"
 ENV_NAME=$(basename ${CHECKPOINT_MODEL_DIR})
 # ENV_NAME="testing"
 NUM_PROCESSES=18
 TASK_CONFIG="tasks/loopnav/mp3d.loopnav.yaml"
 # TASK_CONFIG="tasks/loopnav/gibson-public.loopnav.yaml"
-NAV_TASK="pointnav"
+NAV_TASK="loopnav"
 
 if [ ${NAV_TASK} == "loopnav" ]
 then

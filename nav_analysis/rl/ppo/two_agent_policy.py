@@ -335,9 +335,7 @@ class TwoAgentNet(nn.Module):
             elif self._stage_2_state_type == "random":
                 init_hidden = self._pack_hidden(init_hidden)
                 init_hidden = torch.where(
-                    prev_actions == 3,
-                    random_hidden_states,
-                    init_hidden,
+                    prev_actions == 3, random_hidden_states, init_hidden,
                 )
                 init_hidden = self._unpack_hidden(init_hidden)
             elif self._stage_2_state_type == "zero":

@@ -16,6 +16,9 @@ import torch
 from torch.utils.tensorboard import SummaryWriter
 
 import habitat
+import habitat_sim
+from habitat_sim.utils.common import quat_from_two_vectors, angle_between_quats
+
 import nav_analysis
 from habitat import logger
 from habitat.config.default import get_config as cfg_env
@@ -33,6 +36,29 @@ from nav_analysis.rl.ppo.utils import (
 from gym import spaces
 
 CFG_DIR = osp.join(osp.dirname(nav_analysis.__file__), "configs")
+
+
+def filter_obs(obs, give_obs):
+    if give_obs:
+        return obs
+
+    always_keep_sensors = {"episode_stage", "initial_hidden_state", "pointgoal"}
+    for k, v in obs.items():
+        if k not in always_keep_sensors:
+            obs[k] = np.zeros_like(v)
+
+    return obs
+
+
+def heading_error(env, spath):
+    if len(spath.points) < 2:
+        return 0.0
+
+    gt_heading = quat_from_two_vectors(
+        habitat_sim.geo.FRONT, spath.points[1] - spath.points[0]
+    )
+
+    return angle_between_quats(env.sim.get_agent_state().rotation, gt_heading) / np.pi
 
 
 class ObsStackEnv(habitat.RLEnv):
@@ -106,6 +132,7 @@ class NavRLEnv(habitat.RLEnv):
         self._current_target_distance = None
         self._previous_action = None
         self._episode_distance_covered = None
+        self._give_obs = self._config_env.LOOPNAV_GIVE_RETURN_OBS
 
         if config_env.TASK.VERBOSE is True:
             logger.add_filehandler(os.environ.get("LOG_FILE"))
@@ -120,6 +147,7 @@ class NavRLEnv(habitat.RLEnv):
         self._previous_target_distance = self.habitat_env.current_episode.info[
             "geodesic_distance"
         ]
+        self._previous_heading_error = heading_error(self._env, self._spath())
 
         if self._config_env.VERBOSE is True:
             agent_state = self._env.sim.get_agent_state()
@@ -132,14 +160,15 @@ class NavRLEnv(habitat.RLEnv):
                 )
             )
 
-        if "delta_gps" in observations:
-            observations["delta_gps"] = np.zeros_like(observations["delta_gps"])
+        observations = filter_obs(observations, self._give_obs)
 
         return observations
 
     def step(self, action):
         self._previous_action = action
         observations, reward, done, info = super().step(action)
+
+        observations = filter_obs(observations, self._give_obs)
         return observations, reward, done, info
 
     def get_reward_range(self):
@@ -151,7 +180,8 @@ class NavRLEnv(habitat.RLEnv):
     def get_reward(self, observations):
         reward = self._config_baseline.BASELINE.RL.SLACK_REWARD
 
-        current_target_distance = self._distance_target()
+        spath = self._spath()
+        current_target_distance = spath.geodesic_distance
 
         # check for infinity geodesic distance
         self._current_target_distance = current_target_distance
@@ -159,8 +189,18 @@ class NavRLEnv(habitat.RLEnv):
             logger.info("Infinite geodesic distance observed in get_reward")
             return 0.0
 
-        reward += 1.0 * (self._previous_target_distance - current_target_distance)
+        if self._config_env.LOOPNAV_GIVE_RETURN_OBS:
+            reward += 1.0 * (self._previous_target_distance - current_target_distance)
+        else:
+            reward += 10.0 * (
+                (self._previous_target_distance - current_target_distance)
+                / self._env.current_episode.info["geodesic_distance"]
+            )
         self._previous_target_distance = current_target_distance
+
+        new_heading_error = heading_error(self._env, spath)
+        reward += 0.25 * (new_heading_error - self._previous_heading_error)
+        self._previous_heading_error = new_heading_error
 
         if self._episode_success():
             reward += self._config_baseline.BASELINE.RL.SUCCESS_REWARD
@@ -172,6 +212,11 @@ class NavRLEnv(habitat.RLEnv):
         target_position = self._env.current_episode.goals[0].position
         distance = self._env.sim.geodesic_distance(current_position, target_position)
         return distance
+
+    def _spath(self):
+        current_position = self._env.sim.get_agent_state().position
+        target_position = self._env.current_episode.goals[0].position
+        return self._env.sim.shortest_path(current_position, target_position)
 
     def _episode_success(self):
         if (
@@ -212,21 +257,22 @@ class LoopNavRLEnv(NavRLEnv):
     def __init__(self, config_env, config_baseline, dataset, task):
         self._episode_stage = None
         self._stages_successful = []
-        self._give_return_obs = config_env.TASK.LOOPNAV_GIVE_RETURN_OBS
         self._sparse_goal_sensor = (
             config_env.TASK.POINTGOAL_SENSOR.SENSOR_TYPE == "SPARSE"
         )
         self.task = task
         super().__init__(config_env, config_baseline, dataset)
 
+        self._give_obs = True
+
     def reset(self):
         self._episode_stage = 0
         self._stages_successful = [False, False]
+        self._give_obs = True
         output = super().reset()
         return output
 
     def step(self, action):
-        self._previous_action = action
 
         curr_episode_over = False
         teleport = False
@@ -285,6 +331,11 @@ class LoopNavRLEnv(NavRLEnv):
                             "STAGE-2 ENDING_ROTATION: {}".format(agent_state.rotation)
                         )
 
+        if (
+            action == SimulatorActions.STOP.value and self._episode_stage == 0
+        ) and not self._config_env.LOOPNAV_GIVE_RETURN_OBS:
+            self._give_obs = False
+
         observations, reward, done, info = super().step(action)
         # update episode stage
         if action == SimulatorActions.STOP.value and self._episode_stage == 0:
@@ -311,18 +362,13 @@ class LoopNavRLEnv(NavRLEnv):
             self._env.current_episode.goals[0].position = self._orig_goal
             self._env.current_episode.start_position = self._orig_start
 
-        always_keep_sensors = {"episode_stage"}
-        if self._episode_stage == 1 and not self._give_return_obs:
-            for k, v in observations.items():
-                if k not in always_keep_sensors:
-                    observations[k] = np.zeros_like(v)
-
         return observations, reward, done, info
 
     def get_reward(self, observations):
         reward = self._config_baseline.BASELINE.RL.SLACK_REWARD
 
-        current_target_distance = self._distance_target()
+        spath = self._spath()
+        current_target_distance = spath.geodesic_distance
 
         # check for infinity geodesic distance
         self._current_target_distance = current_target_distance
@@ -330,11 +376,15 @@ class LoopNavRLEnv(NavRLEnv):
             logger.info("Infinite geodesic distance observed in get_reward")
             return 0.0
 
-        reward += 5.0 * (
+        reward += 10.0 * (
             (self._previous_target_distance - current_target_distance)
             / self._env.current_episode.info["geodesic_distance"]
         )
         self._previous_target_distance = current_target_distance
+
+        new_heading_error = heading_error(self._env, spath)
+        reward += 0.25 * (new_heading_error - self._previous_heading_error)
+        self._previous_heading_error = new_heading_error
 
         if self._episode_success():
             # TODO(akadian): multiply by second episode SPL
@@ -461,7 +511,7 @@ def construct_envs(
         if split == "val":
             config_env.DATASET.TYPE = "PointNav-v1"
         else:
-            config_env.DATASET.TYPE = "PointNavOTF-v1"
+            config_env.DATASET.TYPE = "PointNav-v1"
 
         if args.task.training_stage == 2:
             config_env.DATASET.TYPE = "Stage2"

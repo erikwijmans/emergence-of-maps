@@ -328,6 +328,14 @@ class HabitatSim(habitat.Simulator):
         self._sim.pathfinder.find_path(path)
         return path.geodesic_distance
 
+    def shortest_path(self, position_a, position_b):
+        path = habitat_sim.ShortestPath()
+        path.requested_start = np.array(position_a, dtype=np.float32)
+        path.requested_end = np.array(position_b, dtype=np.float32)
+        self._sim.pathfinder.find_path(path)
+
+        return path
+
     def action_space_shortest_path(
         self, source: AgentState, targets: List[AgentState], agent_id: int = 0
     ) -> List[ShortestPathPoint]:

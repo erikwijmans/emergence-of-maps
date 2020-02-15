@@ -34,13 +34,13 @@ msgpack_numpy.patch()
 
 def _swizzle_msgpack(fname):
     base_name = osp.splitext(osp.splitext(fname)[0])[0]
-    msg_pack_name = base_name + ".msg.gz"
+    msg_pack_name = base_name + ".msg"
 
     if not osp.exists(msg_pack_name):
         with gzip.open(fname, "rt") as infile, open(msg_pack_name, "wb") as outfile:
             msgpack.dump(json.load(infile), outfile, use_bin_type=True)
 
-    with gzip.open(msg_pack_name, "rb") as f:
+    with open(msg_pack_name, "rb") as f:
         return msgpack.load(f, raw=False)
 
 
@@ -123,6 +123,10 @@ class PointNavDatasetV1(Dataset):
 
         for episode in deserialized["episodes"]:
             episode = NavigationEpisode(**episode)
+            if not os.path.exists(episode.scene_id):
+                episode.scene_id = os.path.join(
+                    "data", "scene_datasets", episode.scene_id
+                )
             for g_index, goal in enumerate(episode.goals):
                 episode.goals[g_index] = NavigationGoal(**goal)
             if episode.shortest_paths is not None:
