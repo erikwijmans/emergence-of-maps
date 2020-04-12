@@ -315,7 +315,7 @@ class Stage2Dataset(PointNavDatasetOTFV1):
                 goals=[goal],
                 scene_id=self.scene_paths[self.current_scene],
                 start_position=ep["orig_start_position"],
-                start_rotation=ep["orig_start_rotation"],
+                start_rotation=ep["loop_start_rotation"],
                 shortest_paths=None,
                 info=dict(geodesic_distance=ep["orig_geodesic_distance"]),
             )

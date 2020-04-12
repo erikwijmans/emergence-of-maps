@@ -9,6 +9,7 @@ from typing import Any, List, Optional, Type
 
 import cv2
 import fastdtw
+import numba
 import lazy_property
 import numpy as np
 import quaternion
@@ -771,9 +772,13 @@ class LoopSPL(habitat.Measure):
             self._metric = {
                 "total_spl": np.sqrt(np.prod(stage_spls))
                 if stage_spls[1] is not None
-                else stage_spls[0],
+                else 0.0,
                 "stage_1_spl": stage_spls[0],
                 "stage_2_spl": stage_spls[1],
+                "stage_1_success": int(stage_spls[0] > 0.0),
+                "stage_2_success": int(stage_spls[1] > 0.0)
+                if stage_spls[1] is not None
+                else None,
             }
         else:
             self._metric = np.sqrt(np.prod(stage_spls))
@@ -823,7 +828,7 @@ class LoopDDelta(habitat.Measure):
         }
 
 
-class LoopCompareDTW(habitat.Measure):
+class LoopCompare(habitat.Measure):
     def __init__(self, sim: Simulator, config: Config):
         self._episode_stage = None
         self._stage_paths = None
@@ -839,7 +844,7 @@ class LoopCompareDTW(habitat.Measure):
         self._episode_stage = 0
         self._stage_paths = [[np.array(episode.start_position)], []]
         self._episode_successes = [False, False]
-        self._metric = 0.0
+        self._metric = dict(dtw=None, chamfer=None)
 
     def _path_length(self, path):
         _len = 0.0
@@ -850,6 +855,34 @@ class LoopCompareDTW(habitat.Measure):
                 _len += self._sim.geodesic_distance(p2, p1)
 
         return max(_len, 1e-2)
+
+    def _compute_metric(self):
+        pdist = np.zeros(
+            (len(self._stage_paths[1]), len(self._stage_paths[0])), dtype=np.float32
+        )
+        for j in range(pdist.shape[0]):
+            for i in range(pdist.shape[1]):
+                pdist[j, i] = self._sim.geodesic_distance(
+                    self._stage_paths[1][j], self._stage_paths[0][i]
+                )
+
+        self._metric["chamfer"] = np.min(pdist, axis=-1).mean()
+        return
+
+        s0_path = np.stack(self._stage_paths[0]).astype(np.float32)
+        s1_path = np.stack(self._stage_paths[1]).astype(np.float32)
+
+        def dist_lambda(pt1, pt2):
+            pt1_idx = np.argmin(np.abs(s0_path - pt1[np.newaxis, :]).mean(-1))
+            pt2_idx = np.argmin(np.abs(s1_path - pt2[np.newaxis, :]).mean(-1))
+            return pdist[pt2_idx, pt1_idx]
+
+        dist, _ = fastdtw.dtw(s0_path, s1_path, dist=dist_lambda)
+
+        self._metric["ndtw"] = (
+            np.exp(-dist / self._path_length(s0_path))
+            + np.exp(-dist / self._path_length(s1_path))
+        ) / 2.0
 
     def update_metric(self, episode, action):
         current_position = self._sim.get_agent_state().position
@@ -866,17 +899,7 @@ class LoopCompareDTW(habitat.Measure):
 
         if self._episode_stage == 1 and action == self._sim.index_stop_action:
             if len(self._stage_paths[0]) > 0 and len(self._stage_paths[1]) > 0:
-                s0_path = np.stack(self._stage_paths[0]).astype(np.float32)
-                s1_path = np.stack(self._stage_paths[1]).astype(np.float32)
-
-                dist, _ = fastdtw.dtw(
-                    s0_path, s1_path, dist=self._sim.geodesic_distance
-                )
-
-                self._metric = (
-                    np.exp(-dist / self._path_length(s0_path))
-                    + np.exp(-dist / self._path_length(s1_path))
-                ) / 2.0
+                self._compute_metric()
 
 
 class AgentPose(habitat.Measure):

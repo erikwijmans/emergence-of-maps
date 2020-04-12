@@ -32,13 +32,13 @@ CHECKPOINT_MODEL_DIR="data/checkpoints/gibson-public-flee-hrl-rgb-r5"
 CHECKPOINT_MODEL_DIR="data/checkpoints/gibson-2plus-resnet18-frn-step-ramp-no-memory-depth"
 CHECKPOINT_MODEL_DIR="data/checkpoints/mp3d-only-loopnav-stage-2-trained-state-blind"
 CHECKPOINT_MODEL_DIR="data/checkpoints/mp3d-gibson-all-loopnav-stage-2-random-state-blind"
-CHECKPOINT_MODEL_DIR="data/checkpoints/mp3d-gibson-all-loopnav-stage-2-trained-state-no-inputs"
+CHECKPOINT_MODEL_DIR="data/checkpoints/mp3d-gibson-all-loopnav-stage-2-random-state-no-inputs"
 ENV_NAME=$(basename ${CHECKPOINT_MODEL_DIR})
 # ENV_NAME="testing"
 NUM_PROCESSES=18
 TASK_CONFIG="tasks/loopnav/mp3d.loopnav.yaml"
 # TASK_CONFIG="tasks/loopnav/gibson-public.loopnav.yaml"
-NAV_TASK="loopnav"
+NAV_TASK="teleportnav"
 
 if [ ${NAV_TASK} == "loopnav" ]
 then
@@ -51,13 +51,14 @@ else
 fi
 rm ${LOG_FILE}
 
-COUNT_TEST_EPISODES=3996
+COUNT_TEST_EPISODES=1008
 # COUNT_TEST_EPISODES=994
 VIDEO=0
 OUT_DIR_VIDEO="/private/home/erikwijmans/projects/navigation-analysis-habitat/data/eval/videos/${ENV_NAME}"
 
 # for i in 1 2 4 8 16 32 64 96 128 192 256 512
 # do
+set -x
 python -u -m nav_analysis.evaluate_ppo \
     --checkpoint-model-dir ${CHECKPOINT_MODEL_DIR} \
     --sim-gpu-ids ${SIM_GPU_IDS} \

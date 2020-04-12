@@ -124,7 +124,6 @@ class RunAwayRLEnv(habitat.RLEnv):
 
     def step(self, action):
         obs, reward, done, info = super().step(action)
-        self._prev_distance = self._get_distance()
 
         if "pointgoal" in obs:
             obs["pointgoal"] = np.array([5.0, 1.0, 0.0], dtype=np.float32)
@@ -137,12 +136,9 @@ class RunAwayRLEnv(habitat.RLEnv):
     def get_reward(self, observations) -> Any:
         reward = self._slack_reward
 
-        self._current_pose = (
-            self.habitat_env.sim.get_agent_state().position,
-            self.habitat_env.sim.get_agent_state().rotation,
-        )
-
-        reward += 5.0 * (self._get_distance() - self._prev_distance) / self.max_dist()
+        new_dist = self._get_distance()
+        reward += 5.0 * (new_dist - self._prev_distance) / self.max_dist()
+        self._prev_distance = new_dist
 
         return reward
 
@@ -159,7 +155,6 @@ class RunAwayRLEnv(habitat.RLEnv):
     def max_dist(self):
         if self._max_dist is None:
             hsim = self.habitat_env.sim
-            pathfinder = hsim._sim.pathfinder
 
             step = 1.0
             xs = np.arange(-10.0, 10.0 + step, step=step)

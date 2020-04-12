@@ -4,7 +4,7 @@ model:
 
 ppo:
     num_processes: 16
-    num_steps: 512
+    num_steps: 256
 
 task:
     nav_task: loopnav

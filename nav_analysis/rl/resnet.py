@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 import torch.utils.checkpoint
 from torch.autograd import Function
+import torch.nn.functional as F
+
 
 from nav_analysis.rl.frn_layer import FRNLayer
 
@@ -49,14 +51,14 @@ def conv3x3(in_planes, out_planes, stride=1, groups=1):
         kernel_size=3,
         stride=stride,
         padding=1,
-        bias=True,
+        bias=False,
         groups=groups,
     )
 
 
 def conv1x1(in_planes, out_planes, stride=1):
     """1x1 convolution"""
-    return nn.Conv2d(in_planes, out_planes, kernel_size=1, stride=stride, bias=True)
+    return nn.Conv2d(in_planes, out_planes, kernel_size=1, stride=stride, bias=False)
 
 
 class BasicBlock(nn.Module):
@@ -88,12 +90,14 @@ class BasicBlock(nn.Module):
 
 def _build_bottleneck_branch(inplanes, planes, ngroups, stride, expansion, groups=1):
     return nn.Sequential(
-        FRNLayer(inplanes),
         conv1x1(inplanes, planes),
-        FRNLayer(planes),
+        nn.GroupNorm(ngroups, planes),
+        nn.ReLU(True),
         conv3x3(planes, planes, stride, groups=groups),
-        FRNLayer(planes),
+        nn.GroupNorm(ngroups, planes),
+        nn.ReLU(True),
         conv1x1(planes, planes * expansion),
+        nn.GroupNorm(ngroups, planes * expansion),
     )
 
 
@@ -145,7 +149,7 @@ class Bottleneck(nn.Module):
         if self.downsample is not None:
             identity = self.downsample(x)
 
-        return out + identity
+        return F.relu(out + identity, True)
 
     def forward(self, x):
         return self._impl(x)
@@ -171,7 +175,7 @@ class SEBottleneck(Bottleneck):
         if self.downsample is not None:
             identity = self.downsample(x)
 
-        return out + identity
+        return F.relu(out + identity, True)
 
 
 class SEResNeXtBottleneck(SEBottleneck):
@@ -216,8 +220,10 @@ class ResNet(nn.Module):
         super(ResNet, self).__init__()
         self.conv1 = nn.Sequential(
             nn.Conv2d(
-                in_channels, base_planes, kernel_size=7, stride=2, padding=3, bias=True
-            )
+                in_channels, base_planes, kernel_size=7, stride=2, padding=3, bias=False
+            ),
+            nn.GroupNorm(ngroups, base_planes),
+            nn.ReLU(True),
         )
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         self.cardinality = cardinality
@@ -239,14 +245,13 @@ class ResNet(nn.Module):
 
         self.final_channels = self.inplanes
         self.final_spatial_compress = 1.0 / (2 ** 5)
-        self.final_norm = FRNLayer(self.final_channels)
 
     def _make_layer(self, block, ngroups, planes, blocks, stride=1):
         downsample = None
         if stride != 1 or self.inplanes != planes * block.expansion:
             downsample = nn.Sequential(
                 conv1x1(self.inplanes, planes * block.expansion, stride),
-                FRNLayer(planes * block.expansion),
+                nn.GroupNorm(ngroups, planes * block.expansion),
             )
 
         layers = []
@@ -274,7 +279,6 @@ class ResNet(nn.Module):
         x = self.layer2(x)
         x = self.layer3(x)
         x = self.layer4(x)
-        x = self.final_norm(x)
 
         return x
 

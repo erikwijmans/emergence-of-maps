@@ -2,15 +2,15 @@
 #SBATCH -J visitation-predictor
 #SBATCH --output=/checkpoint/%u/jobs/job.%A_%a.out
 #SBATCH --error=/checkpoint/%u/jobs/job.%A_%a.err
-#SBATCH --gpus-per-task 1
+#SBATCH --gres=gpu:1
 #SBATCH --nodes 1
 #SBATCH --cpus-per-task 10
 #SBATCH --ntasks-per-node 1
 #SBATCH --mem-per-cpu=5GB
-#SBATCH --partition=learnfair
+#SBATCH --partition=scavenge
 #SBATCH --time=2:00:00
 #SBATCH --signal=USR1@300
-#SBATCH --array=0-511
+#SBATCH --array=0-511%50
 
 echo "Using setup for Erik"
 . /private/home/erikwijmans/miniconda3/etc/profile.d/conda.sh
@@ -35,5 +35,7 @@ export MASTER_ADDR=$(srun --ntasks=1 hostname 2>&1 | tail -n1)
 
 printenv | grep SLURM
 set -x
-srun python -u -m nav_analysis.map_extraction.training.train_position_predictor \
-    --time-offset ${time_offset}
+srun -u \
+    python -u -m nav_analysis.map_extraction.training.train_position_predictor \
+    --time-offset ${time_offset} \
+    --chance-run False

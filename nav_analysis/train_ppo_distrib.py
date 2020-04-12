@@ -423,9 +423,7 @@ def main():
                         device=device,
                     )
 
-                    current_episode_reward.copy_(
-                        current_episode_reward * args.ppo.gamma + rewards
-                    )
+                    current_episode_reward.copy_(current_episode_reward + rewards)
                     with torch.no_grad():
                         agent.reward_whitten.update(current_episode_reward)
 

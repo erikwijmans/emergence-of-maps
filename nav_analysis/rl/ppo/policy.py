@@ -173,7 +173,8 @@ class ResNetEncoder(nn.Module):
                 padding=1,
                 bias=False,
             ),
-            FRNLayer(bn_size),
+            nn.GroupNorm(1, bn_size),
+            nn.ReLU(True),
         )
 
     def forward(self, x):
@@ -204,7 +205,7 @@ class Net(nn.Module):
 
         if "rgb" in observation_space.spaces:
             self._n_input_rgb = observation_space.spaces["rgb"].shape[2]
-            if True:
+            if False:
                 self.register_buffer(
                     "grayscale_kernel",
                     torch.tensor([0.2126, 0.7152, 0.0722], dtype=torch.float32).view(
@@ -226,9 +227,10 @@ class Net(nn.Module):
             self._n_input_depth = 0
 
         self._norm_inputs = norm_visual_inputs
-        #  self._norm_inputs = True
         if self._norm_inputs and not blind:
-            self.running_mean_and_var = ImageAutoRunningMeanAndVar(n_channels=1)
+            self.running_mean_and_var = ImageAutoRunningMeanAndVar(
+                n_channels=self._n_input_rgb + self._n_input_depth
+            )
 
         self.prev_action_embedding = nn.Embedding(5, 32)
         self._n_prev_action = 32
@@ -262,7 +264,7 @@ class Net(nn.Module):
         if not blind:
             assert self._n_input_depth + self._n_input_rgb > 0
 
-            if "resnet" in backbone:
+            if "resnet" in backbone or "resneXt" in backbone:
                 backbone = getattr(nav_analysis.rl.resnet, backbone)(
                     self._n_input_depth + self._n_input_rgb,
                     resnet_baseplanes,
@@ -283,8 +285,7 @@ class Net(nn.Module):
             self.cnn = nn.Sequential(
                 encoder,
                 Flatten(),
-                nn.Linear(np.prod(encoder.output_size), hidden_size, bias=False),
-                nn.LayerNorm(hidden_size),
+                nn.Linear(np.prod(encoder.output_size), hidden_size, bias=True),
                 nn.ReLU(True),
             )
             rnn_input_size += self._hidden_size
@@ -516,9 +517,9 @@ class Net(nn.Module):
             # permute tensor to dimension [BATCH x CHANNEL x HEIGHT X WIDTH]
             rgb_observations = rgb_observations.permute(0, 3, 1, 2)
             rgb_observations = rgb_observations / 255.0  # normalize RGB
-            rgb_observations = (self.grayscale_kernel * rgb_observations).sum(
-                1, keepdim=True
-            )
+            #  rgb_observations = (self.grayscale_kernel * rgb_observations).sum(
+            #  1, keepdim=True
+            #  )
 
             cnn_input.append(rgb_observations)
 
@@ -575,9 +576,9 @@ class Net(nn.Module):
                 x, rnn_hidden_states, masks, prev_actions, observations
             )
 
-        if self._task == "pointnav":
-            value = self.critic_linear(x)
-        else:
+        if self._task in ["loopnav", "teleportnav"]:
             value = self.critic(x)
+        else:
+            value = self.critic_linear(x)
 
         return value, x, rnn_hidden_states, cnn_feats

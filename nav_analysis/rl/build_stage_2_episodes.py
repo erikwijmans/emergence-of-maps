@@ -1,12 +1,10 @@
 import argparse
 import asyncio
 import atexit
-import collections
 import os
 import os.path as osp
 import random
 
-import cv2
 import fairtask
 import fairtask_slurm
 import habitat_sim
@@ -16,7 +14,7 @@ import msgpack_numpy
 import numpy as np
 import torch
 import tqdm
-from pydash import py_
+import glob
 
 import nav_analysis
 from habitat.config.default import get_config as cfg_env
@@ -25,25 +23,29 @@ from nav_analysis.rl.ppo.policy import Policy
 from nav_analysis.rl.ppo.utils import batch_obs
 from nav_analysis.train_ppo import construct_envs
 
-fairtask.queue.TASK_MAX_RETRIES = 30
-
 msgpack_numpy.patch()
 
 CFG_DIR = osp.join(osp.dirname(nav_analysis.__file__), "configs")
 
+
+fairtask.queue.TASK_MAX_RETRIES = 30
+
 slurm_q = fairtask_slurm.SLURMQueueConfig(
     name="dump-rollouts",
-    num_workers_per_node=1,
+    num_workers_per_node=4,
     cpus_per_worker=10,
     mem_gb_per_worker=100,
-    num_jobs=32,
+    num_jobs=64,
     partition="learnfair",
-    maxtime_mins=300,
+    maxtime_mins=int(24 * 60),
     gres="gpu:1",
+    log_directory="/checkpoint/{user}/fairtask",
+    output="slurm-%j.out",
+    error="slurm-%j.err",
 )
 
 qs = fairtask.TaskQueues(
-    {"local": fairtask.LocalQueueConfig(num_workers=8), "slurm": slurm_q},
+    {"local": fairtask.LocalQueueConfig(num_workers=1), "slurm": slurm_q},
     no_workers=False,
 )
 
@@ -53,14 +55,40 @@ def close_queues():
     qs.close()
 
 
+class DotDict(dict):
+    """
+    a dictionary that supports dot notation 
+    as well as dictionary access notation 
+    usage: d = DotDict() or d = DotDict({'val1':'first'})
+    set attributes: d.val2 = 'second' or d['val2'] = 'second'
+    get attributes: d.val2 or d['val2']
+    """
+
+    __getattr__ = dict.__getitem__
+    __setattr__ = dict.__setitem__
+    __delattr__ = dict.__delitem__
+
+    def __init__(self, dct):
+        for key, value in dct.items():
+            if hasattr(value, "keys"):
+                value = DotDict(value)
+            self[key] = value
+
+    def __getstate__(self):
+        return self.__dict__
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+
+
 def build_parser():
     parser = argparse.ArgumentParser()
 
-    parser.add_argument("--model-path", type=str, required=True)
-    parser.add_argument("--sample-per-scene", type=float, default=1e4)
+    parser.add_argument("--model-paths-glob", type=str, required=True)
+    parser.add_argument("--sample-per-scene", type=float, default=2e4)
 
     parser.add_argument("--gpu-id", type=int, default=0)
-    parser.add_argument("--num-processes", type=int, default=8)
+    parser.add_argument("--num-processes", type=int, default=16)
 
     return parser
 
@@ -123,13 +151,16 @@ def collect_traj_for_scene(args, trained_args, random_weights_state, scene):
             trained_args.model.hidden_size,
             device=device,
         )
+
         random_recurrent_hidden_states = torch.zeros(
             actor_critic.net.num_recurrent_layers,
             args.num_processes,
             trained_args.model.hidden_size,
             device=device,
         )
+
         not_done_masks = torch.zeros(args.num_processes, 1, device=device)
+
         prev_actions = torch.zeros(
             args.num_processes, 1, device=device, dtype=torch.int64
         )
@@ -138,6 +169,7 @@ def collect_traj_for_scene(args, trained_args, random_weights_state, scene):
         infos = None
 
         current_episodes = envs.current_episodes()
+        pbar = tqdm.tqdm(total=args.sample_per_scene, ascii=True)
         while len(trajectories) < args.sample_per_scene:
             with torch.no_grad():
                 _, actions, _, _, test_recurrent_hidden_states = actor_critic.act(
@@ -176,6 +208,7 @@ def collect_traj_for_scene(args, trained_args, random_weights_state, scene):
             for i in range(args.num_processes):
                 if dones[i]:
                     if infos[i]["spl"] > 0:
+                        pbar.update()
                         trajectories.append(
                             dict(
                                 hidden_state=test_recurrent_hidden_states[:, i]
@@ -244,15 +277,15 @@ def collect_traj_for_scene(args, trained_args, random_weights_state, scene):
 
 async def main():
     args = build_parser().parse_args()
+    args.model_paths = glob.glob(args.model_paths_glob)
 
-    trained_ckpt = torch.load(args.model_path, map_location="cpu")
+    trained_ckpt = torch.load(args.model_paths[0], map_location="cpu")
     trained_args = trained_ckpt["args"]
 
     trained_args.ppo.num_processes = args.num_processes
     trained_args.general.sim_gpu_id = args.gpu_id
 
     trained_args.general.video = False
-    trained_args.task.shuffle_interval = int(1e4)
 
     basic_config = cfg_env(
         config_file=trained_args.task.task_config, config_dir=CFG_DIR
@@ -262,6 +295,8 @@ async def main():
     basic_config.DATASET.SPLIT = "train"
     basic_config.freeze()
     scenes = PointNavDatasetV1.get_scenes_to_load(basic_config.DATASET)
+
+    random_weights_states_files = dict()
 
     with construct_envs(
         trained_args, "train", dset_measures=False, scenes=[scenes[0]]
@@ -281,23 +316,33 @@ async def main():
             if trained_args.task.training_stage == -1
             else "loopnav",
         )
+        for model_path in args.model_paths:
+            random_weights_state = osp.join(
+                osp.dirname(model_path), "episodes", f"random_weights_state.ckpt"
+            )
+            random_weights_states_files[model_path] = random_weights_state
 
-        actor_critic = Policy(**policy_args)
-
-        random_weights_state = osp.join(
-            osp.dirname(args.model_path), "episodes", f"random_weights_state.ckpt"
-        )
-        os.makedirs(osp.dirname(random_weights_state), exist_ok=True)
-        torch.save(actor_critic.state_dict(), random_weights_state)
+            os.makedirs(osp.dirname(random_weights_state), exist_ok=True)
+            if not osp.exists(random_weights_state):
+                actor_critic = Policy(**policy_args)
+                torch.save(actor_critic.state_dict(), random_weights_state)
 
     tasks = []
-    for s in scenes:
-        output_path = osp.join(osp.dirname(args.model_path), "episodes", f"{s}.lmdb")
-
-        if not osp.exists(output_path):
-            tasks.append(
-                collect_traj_for_scene(args, trained_args, random_weights_state, s)
+    for model_path in args.model_paths:
+        job_args = DotDict(vars(args))
+        job_args.model_path = model_path
+        random_weights_state = random_weights_states_files[model_path]
+        for s in scenes:
+            output_path = osp.join(
+                osp.dirname(job_args.model_path), "episodes", f"{s}.lmdb"
             )
+
+            if not osp.exists(output_path):
+                tasks.append(
+                    collect_traj_for_scene(
+                        job_args, trained_args, random_weights_state, s
+                    )
+                )
 
     with tqdm.tqdm(total=len(tasks)) as pbar:
         for task in asyncio.as_completed(tasks):

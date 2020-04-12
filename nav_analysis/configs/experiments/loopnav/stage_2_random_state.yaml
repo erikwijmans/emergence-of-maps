@@ -3,7 +3,7 @@ task:
     training_stage: 2
 
 ppo:
-    num_updates: 15000
+    num_updates: 25000
 
 stage_2_args:
     state_type: random

@@ -115,6 +115,9 @@ class ImageAutoRunningMeanAndVar(nn.Module):
             )
 
     def forward(self, x):
+        if x.size(1) == 3 and self._mean.mean() > 1.0 and x.mean() < 1.0:
+            x = x * 255.0
+
         self.update(x)
 
         return (x - self._mean) / self.stdev

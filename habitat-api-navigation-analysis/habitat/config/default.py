@@ -117,7 +117,7 @@ _C.TASK.LOOP_D_DELTA.TELEPORT = False
 # # LOOP_COMPARE MEASUREMENT
 # -----------------------------------------------------------------------------
 _C.TASK.LOOP_COMPARE = CN()
-_C.TASK.LOOP_COMPARE.TYPE = "LoopCompareDTW"
+_C.TASK.LOOP_COMPARE.TYPE = "LoopCompare"
 _C.TASK.LOOP_COMPARE.TELEPORT = False
 # -----------------------------------------------------------------------------
 # # GEO_DISTANCES MEASUREMENT

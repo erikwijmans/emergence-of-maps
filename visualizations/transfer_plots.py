@@ -89,6 +89,7 @@ def create_multiplexer(logdir, run_names):
 def main():
     pretty_type_names = {
         "scratch": r"Scratch",
+        "pointnav-scratch": r"Scratch",
         "imagenet-xfer": r"ImageNetEncoder-ScratchPolicy",
         "pointnav-xfer": r"PointGoalNavEncoder-ScratchPolicy",
         "pointnav-ftune": r"PointGoalNavEncoder-FinetunePolicy",
@@ -100,7 +101,8 @@ def main():
     args = build_parser().parse_args()
 
     type_order = [
-        "scratch",
+        #  "scratch",
+        "pointnav-scratch",
         "imagenet-xfer",
         "pointnav-xfer",
         "pointnav-ftune",
@@ -206,7 +208,6 @@ def main():
             style="",
             markers=True,
             dashes=False,
-            #  style="dset",
             data=data,
             legend="full",
             palette=palette,

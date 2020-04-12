@@ -344,7 +344,7 @@ class LoopNavRLEnv(NavRLEnv):
         if teleport:
             self._env.sim.set_agent_state(
                 self._env.current_episode.start_position,
-                self._env.current_episode.start_rotation,
+                self._env.sim.get_agent_state().rotation,
             )
 
             sim_obs = self._env.sim._sim.get_sensor_observations()
@@ -548,6 +548,7 @@ def construct_envs(
             agent_sensors = []
 
         config_env.SIMULATOR.AGENT_0.SENSORS = list(agent_sensors)
+        config_env.TASK.LOOPNAV_GIVE_RETURN_OBS = args.task.loopnav_give_return_inputs
 
         if args.task.nav_task in ["loopnav", "teleportnav"]:
             config_env.SIMULATOR.AGENT_0.TURNAROUND = args.task.training_stage == -1
@@ -555,9 +556,6 @@ def construct_envs(
                 set(config_env.TASK.MEASUREMENTS + ["LOOPSPL", "LOOP_D_DELTA"])
             )
             config_env.TASK.LOOPSPL.BREAKDOWN_METRIC = True
-            config_env.TASK.LOOPNAV_GIVE_RETURN_OBS = (
-                args.task.loopnav_give_return_inputs
-            )
 
             if args.task.nav_task == "teleportnav":
                 config_env.TASK.LOOPSPL.TELEPORT = True
