@@ -7,10 +7,10 @@
 #SBATCH --cpus-per-task 10
 #SBATCH --ntasks-per-node 1
 #SBATCH --mem-per-cpu=5GB
-#SBATCH --partition=scavenge
+#SBATCH --partition=learnfair,scavenge
 #SBATCH --time=2:00:00
 #SBATCH --signal=USR1@300
-#SBATCH --array=0-511%50
+#SBATCH --array=0-511%100
 
 echo "Using setup for Erik"
 . /private/home/erikwijmans/miniconda3/etc/profile.d/conda.sh
@@ -31,11 +31,13 @@ module load NCCL/2.5.6-1-cuda.10.1
 module load openmpi/4.0.1/gcc.7.4.0-git_patch#6654
 
 
-export MASTER_ADDR=$(srun --ntasks=1 hostname 2>&1 | tail -n1)
+# export MASTER_ADDR=$(srun --ntasks=1 hostname 2>&1 | tail -n1)
 
 printenv | grep SLURM
 set -x
-srun -u \
-    python -u -m nav_analysis.map_extraction.training.train_position_predictor \
+# srun -u \
+python -u -m nav_analysis.map_extraction.training.train_position_predictor \
     --time-offset ${time_offset} \
-    --chance-run False
+    --val-dataset data/map_extraction/positions_maps/loopnav-final-mp3d-blind_val-for-training.lmdb \
+    --train-dataset data/map_extraction/positions_maps/loopnav-final-mp3d-blind_train.lmdb \
+    --chance-run True

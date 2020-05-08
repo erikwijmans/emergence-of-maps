@@ -40,10 +40,10 @@ run_name_parser = re.compile(
 sns.set(style="whitegrid", font_scale=1.3)
 
 
-def mean_ci(vals):
+def mean_ci(vals, sigfigs=1):
     vals = np.array(vals)
     sem = 1.96 * np.std(vals) / np.sqrt(len(vals))
-    return np.round(np.mean(vals), 2), np.round(sem, 3)
+    return np.round(np.mean(vals), sigfigs), np.round(sem, sigfigs + 1)
 
 
 def build_parser():
@@ -56,10 +56,24 @@ def build_parser():
     return parser
 
 
+def make_row(chamfers, success, spls):
+    row = ""
+    for i, metric in enumerate([chamfers, success, spls]):
+        if i != 0:
+            m, std = mean_ci(metric)
+            row += " & "
+            row += r"{:.1f}\scriptsize{{$\pm${:.2f}}}".format(m, std)
+        else:
+            m, std = mean_ci(metric, 2)
+            row += r"{:.2f}\scriptsize{{$\pm${:.3f}}}".format(m, std)
+
+    return row
+
+
 SIZE_GUIDANCE = {"scalars": 500}
 
 
-def extract_scalars(multiplexer, run, tag):
+def extract_scalars(multiplexer, run, tag, vmul=1.0):
     """Extract tabular data from the scalars at a given run and tag.
   The result is a list of 3-tuples (wall_time, step, value).
   """
@@ -78,7 +92,7 @@ def extract_scalars(multiplexer, run, tag):
     ema_values = []
     for s, v in values:
         ema = beta * ema + (1.0 - beta) * v
-        ema_values.append([s / 1e6, ema])
+        ema_values.append([s / 1e6, ema * vmul])
 
     return ema_values
 
@@ -110,14 +124,18 @@ def main():
         all_logs[(task, state, input_type)].append(run_name)
 
     def _make_key(v, m):
-        return osp.join(
-            v, "val_" + ("stage-2 SPL" if m == "spl" else "stage-2 Success")
-        )
+        if m == "spl":
+            m = "stage-2 SPL"
+        elif m == "success":
+            m = "stage-2 Success"
+
+        return osp.join(v, "val_" + m)
 
     all_run_names = []
     for v in py_().values().flatten()(all_logs):
         all_run_names.append(_make_key(v, "spl"))
         all_run_names.append(_make_key(v, "success"))
+        all_run_names.append(_make_key(v, "loop_compare_chamfer"))
 
     multiplexer = create_multiplexer(args.logdir, all_run_names)
 
@@ -130,26 +148,33 @@ def main():
     ):
         spls = []
         successes = []
+        chamfers = []
         for rn in all_logs[(task, state, input_type)]:
-            spls.append(
-                max(
-                    s[1]
-                    for s in extract_scalars(multiplexer, _make_key(rn, "spl"), "val")
+            rn_spls = [
+                s[1]
+                for s in extract_scalars(
+                    multiplexer, _make_key(rn, "spl"), "val", 100.0
                 )
-            )
+            ]
+
+            best_idx = np.argmax(rn_spls)
+
+            spls.append(rn_spls[best_idx])
 
             successes.append(
-                max(
-                    s[1]
-                    for s in extract_scalars(
-                        multiplexer, _make_key(rn, "success"), "val"
-                    )
-                )
+                extract_scalars(multiplexer, _make_key(rn, "success"), "val", 100.0)[
+                    best_idx
+                ][1]
+            )
+
+            chamfers.append(
+                extract_scalars(
+                    multiplexer, _make_key(rn, "loop_compare_chamfer"), "val", 1.0
+                )[best_idx][1]
             )
 
         print(input_type, state, task)
-        print(mean_ci(spls))
-        print(mean_ci(successes))
+        print(make_row(chamfers, successes, spls))
 
 
 if __name__ == "__main__":

@@ -117,7 +117,7 @@ def build_visitation_dataset_cache(lmdb_filename, time_range_size):
         ):
             txn.put(
                 f"hidden_state/{i}".encode(),
-                msgpack_numpy.packb(hidden_state.astype(np.float32), use_bin_type=True),
+                msgpack_numpy.packb(hidden_state.astype(np.float16), use_bin_type=True),
             )
 
         all_positions = np.array(all_positions, dtype=np.float32)
@@ -220,9 +220,13 @@ class VisititationPredictionDataset(torch.utils.data.IterableDataset):
                     else:
                         hidden_idx = ele["hidden_state_idx"]
 
-                    ele["hidden_state"] = msgpack_numpy.unpackb(
-                        txn.get(f"hidden_state/{hidden_idx}".encode()), raw=False,
-                    ).flatten()
+                    ele["hidden_state"] = (
+                        msgpack_numpy.unpackb(
+                            txn.get(f"hidden_state/{hidden_idx}".encode()), raw=False,
+                        )
+                        .astype(np.float32)
+                        .flatten()
+                    )
 
                     self._preload.append(ele)
 
@@ -286,10 +290,14 @@ class ListDataset(torch.utils.data.Dataset):
 
         ele = self.time_range_dset[idx].copy()
         with self._lmdb_env.begin(buffers=True) as txn:
-            ele["hidden_state"] = msgpack_numpy.unpackb(
-                txn.get("hidden_state/{}".format(ele["hidden_state_idx"]).encode()),
-                raw=False,
-            ).flatten()
+            ele["hidden_state"] = (
+                msgpack_numpy.unpackb(
+                    txn.get("hidden_state/{}".format(ele["hidden_state_idx"]).encode()),
+                    raw=False,
+                )
+                .astype(np.float32)
+                .flatten()
+            )
 
         return ele
 

@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=navigation-analysis-habitat
-#SBATCH --output=/checkpoint/%u/jobs/job.%A_%a.out
-#SBATCH --error=/checkpoint/%u/jobs/job.%A_%a.err
+#SBATCH --output=/checkpoint/%u/jobs/job.%j.out
+#SBATCH --error=/checkpoint/%u/jobs/job.%j.err
 #SBATCH --gpus-per-task 1
 #SBATCH --nodes 1
 #SBATCH --cpus-per-task 10

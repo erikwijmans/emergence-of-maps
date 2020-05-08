@@ -241,7 +241,6 @@ class MemoryLimitedNet(Net):
         x = torch.cat(x, dim=1)  # concatenate goal vector
 
         x = x.view(self._max_memory_length, x.size(0) // self._max_memory_length, -1)
-        B = x.size(1)
 
         lengths = (
             (observations["prev_action"].view(x.size(0), x.size(1)) != 0).long().sum(0)

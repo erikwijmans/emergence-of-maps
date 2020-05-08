@@ -866,7 +866,8 @@ class LoopCompare(habitat.Measure):
                     self._stage_paths[1][j], self._stage_paths[0][i]
                 )
 
-        self._metric["chamfer"] = np.min(pdist, axis=-1).mean()
+        self._metric["chamfer_probe_agent"] = np.min(pdist, axis=1).mean()
+        self._metric["chamfer_agent_probe"] = np.min(pdist, axis=0).mean()
         return
 
         s0_path = np.stack(self._stage_paths[0]).astype(np.float32)
@@ -938,7 +939,6 @@ class EgocentricPose(habitat.Measure):
         transform_world_curr = _SE3(state.rotation, state.position)
 
         transform_start_curr = episode.transform_start_world * transform_world_curr
-        pos = transform_start_curr.trans
         self._metric = (
             transform_start_curr.trans,
             quat_to_coeffs(transform_start_curr.rot),
@@ -1033,8 +1033,8 @@ class TopDownOccupancyGrid(habitat.Measure):
         self._coordinate_min = maps.COORDINATE_MIN
         self._coordinate_max = maps.COORDINATE_MAX
         self._top_down_map = None
-        self._cell_scale = 0.25
-        resolution = int(96 * 1.25)
+        self._cell_scale = 0.125
+        resolution = int(192 * 1.25) + 1
         self._map_resolution = (resolution, resolution)
         super().__init__()
 
@@ -1065,7 +1065,7 @@ class TopDownOccupancyGrid(habitat.Measure):
 
         h2 = top_down_map.shape[0] // 2 - 1
         w2 = top_down_map.shape[1] // 2 - 1
-        crop = int(96 / 2)
+        crop = int(192 / 2)
         top_down_map = top_down_map[h2 - crop : h2 + crop, w2 - crop : w2 + crop]
 
         self._metric = top_down_map

@@ -84,9 +84,9 @@ def before_exit():
 def init_distrib():
     master_port = int(os.environ.get("MASTER_PORT", 1234))
     master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
-    local_rank = int(os.environ.get("LOCAL_RANK", os.environ.get("SLURM_LOCALID")))
-    world_rank = int(os.environ.get("RANK", os.environ.get("SLURM_PROCID")))
-    world_size = int(os.environ.get("WORLD_SIZE", os.environ.get("SLURM_NTASKS")))
+    local_rank = int(os.environ.get("LOCAL_RANK", os.environ.get("SLURM_LOCALID", 0)))
+    world_rank = int(os.environ.get("RANK", os.environ.get("SLURM_PROCID", 0)))
+    world_size = int(os.environ.get("WORLD_SIZE", os.environ.get("SLURM_NTASKS", 1)))
 
     torch.cuda.set_device(torch.device("cuda", local_rank))
 

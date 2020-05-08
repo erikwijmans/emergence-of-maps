@@ -15,9 +15,6 @@ import torch.utils.data
 import tqdm
 from apex import amp
 from scipy import ndimage
-from sklearn.decomposition import PCA
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.svm import LinearSVC
 from torch.utils import tensorboard
 
 from nav_analysis.utils.ddp_utils import init_distrib_slurm
@@ -41,14 +38,11 @@ def create_occupancy_grid_mask(visited_map, rank=2, napply=1):
 class VisitedDataset(torch.utils.data.Dataset):
     bins = None
 
-    def __init__(self, split, T=100):
+    def __init__(self, split):
         super().__init__()
         global num_bins
         self.split = split
-        self.T = T
-        self.fname = (
-            f"data/map_extraction/positions_maps/loopnav-static-pg-v4_{split}_dset.h5"
-        )
+        self.fname = f"data/map_extraction/positions_maps/loopnav-final-mp3d-blind-with-random-states_{split}_dset.h5"
 
         self._f = h5.File(self.fname, "r")
         self._len = self._f.attrs["len"]
@@ -73,11 +67,11 @@ class VisitedDataset(torch.utils.data.Dataset):
         mask = create_occupancy_grid_mask(_map, napply=2)
         mask = np.ones_like(mask).astype(np.bool)
 
-        #  d_goal = self._f["d_goal"][idx // self._samples_per][idx % self._samples_per]
-        #  d_start = self._f["d_start"][idx // self._samples_per][idx % self._samples_per]
+        d_goal = self._f["d_goal"][idx // self._samples_per][idx % self._samples_per]
+        d_start = self._f["d_start"][idx // self._samples_per][idx % self._samples_per]
 
-        d_goal = np.array([0.0], dtype=np.float32)[0]
-        d_start = d_goal
+        #  d_goal = np.array([0.0], dtype=np.float32)[0]
+        #  d_start = d_goal
 
         return xs, _map, _future_map - _map, grid, mask, d_start, d_goal
 
@@ -164,10 +158,10 @@ class BaseModel(nn.Module):
         super().__init__()
 
         self.num_bins = num_bins
-        hidden_size = 256
+        hidden_size = 512
         div = 16
         self.hidden_spatial_size = np.array(
-            [32, num_bins[0] // div, num_bins[1] // div]
+            [64, num_bins[0] // div, num_bins[1] // div]
         )
         self.hidden_reshape = nn.Sequential(
             _make_layer(input_size, hidden_size),
@@ -175,15 +169,15 @@ class BaseModel(nn.Module):
         )
 
         self.backbone = nn.Sequential(
+            _make_coord_conv(64, 64),
+            _make_coord_deconv(64, 64),
+            _make_coord_conv(64, 32),
+            _make_coord_deconv(32, 32),
             _make_coord_conv(32, 32),
             _make_coord_deconv(32, 32),
             _make_coord_conv(32, 32),
-            _make_coord_deconv(32, 64),
-            _make_coord_conv(64, 64),
-            _make_coord_deconv(64, 64),
-            _make_coord_conv(64, 64),
-            _make_coord_deconv(64, 64),
-            _make_coord_conv(64, 64),
+            _make_coord_deconv(32, 32),
+            _make_coord_conv(32, 16),
         )
 
     def forward(self, x):
@@ -198,10 +192,10 @@ class VisitedModel(nn.Module):
         super().__init__()
         self.visited_model = BaseModel(input_size, num_bins)
         self.future_head = nn.Sequential(
-            _make_coord_conv(64, 64), nn.Dropout(p=0.0), nn.Conv2d(64, 2, 1)
+            _make_coord_conv(16, 4), nn.Dropout(p=0.0), nn.Conv2d(4, 2, 1)
         )
         self.past_head = nn.Sequential(
-            _make_coord_conv(64, 64), nn.Dropout(p=0.0), nn.Conv2d(64, 2, 1)
+            _make_coord_conv(16, 4), nn.Dropout(p=0.0), nn.Conv2d(4, 2, 1)
         )
         self.num_bins = num_bins
 
@@ -223,7 +217,7 @@ class OccupancyModel(nn.Module):
     def __init__(self, input_size, num_bins, linear=False):
         super().__init__()
         self.occupancy_model = BaseModel(input_size, num_bins)
-        self.occupancy_head = nn.Sequential(nn.Dropout(p=0.0), nn.Conv2d(64, 2, 1))
+        self.occupancy_head = nn.Sequential(nn.Dropout(p=0.0), nn.Conv2d(16, 2, 1))
         self.num_bins = num_bins
 
     def _cleanup_pred(self, pred):
@@ -251,7 +245,7 @@ class GeoModel(nn.Module):
     def forward(self, x):
         geo_feats = self.geo_shared(x)
 
-        return (self.d_start(geo_feats).squeeze(-1), self.d_goal(geo_feats).squeeze(-1))
+        return self.d_start(geo_feats).squeeze(-1), self.d_goal(geo_feats).squeeze(-1)
 
 
 class Model(nn.Module):
@@ -281,19 +275,17 @@ class FocalLoss:
 
         logits = logits.view(-1, 2)
         y = y.view(-1)
-        if mask is not None:
-            mask = mask.view(-1)
-            inds = mask.nonzero().squeeze(-1)
-
-            logits = torch.index_select(logits, 0, inds)
-            y = torch.index_select(y, 0, inds)
 
         device = logits.device
         self.weights = self.weights.to(device)
         self.gamma = self.gamma.to(device)
 
         if self.gamma > 0.0:
+
             loss = F.cross_entropy(logits, y, weight=self.weights, reduction="none")
+
+            if mask is not None:
+                loss = torch.masked_select(loss, mask.view(-1))
 
             with torch.no_grad():
                 probs = F.softmax(logits.detach(), -1)
@@ -302,9 +294,12 @@ class FocalLoss:
                     .pow(self.gamma)
                     .view(-1)
                 )
+
             return focal_weights * loss
         else:
-            return F.cross_entropy(logits, y, weight=weights)
+            return torch.masked_select(
+                F.cross_entropy(logits, y, weight=self.weights), mask.view(-1)
+            )
 
 
 focal_loss = FocalLoss()
@@ -436,9 +431,10 @@ class EpochMetrics:
         self.total_occupancy_loss /= self.occupancy_count
 
 
-def train_epoch(model, optims, lr_scheds, loader, writer, step):
-    device = next(model.parameters()).device
-    model.train()
+def train_epoch(models, optims, lr_scheds, loader, writer, step):
+    device = next(models[0].parameters()).device
+    for m in models:
+        m.train()
 
     metrics = EpochMetrics(device)
 
@@ -450,7 +446,9 @@ def train_epoch(model, optims, lr_scheds, loader, writer, step):
             batch = tuple(v.to(device) for v in batch)
             x, y_past, y_future, grid, mask, gt_d_start, gt_d_goal = batch
 
-            past_logits, future_logits, occupancy_logits, d_start, d_goal = model(x)
+            past_logits, future_logits = models[0](x)
+            occupancy_logits = models[1](x)
+            d_start, d_goal = models[2](x)
 
             future_visted_loss = focal_loss(future_logits, y_future)
             past_visited_loss = focal_loss(past_logits, y_past)
@@ -458,22 +456,19 @@ def train_epoch(model, optims, lr_scheds, loader, writer, step):
             start_loss = F.smooth_l1_loss(d_start, gt_d_start)
             goal_loss = F.smooth_l1_loss(d_goal, gt_d_goal)
 
-            for optim in optims:
+            losses = [
+                past_visited_loss.mean() + future_visted_loss.mean(),
+                occupancy_loss.mean(),
+                start_loss + goal_loss,
+            ]
+            for lidx, loss, optim in zip(range(len(losses)), losses, optims):
                 optim.zero_grad()
+                with amp.scale_loss(loss, optim, lidx) as scaled_loss:
+                    scaled_loss.backward()
 
-            with amp.scale_loss(
-                past_visited_loss.mean()
-                + future_visted_loss.mean()
-                + occupancy_loss.mean()
-                + start_loss
-                + goal_loss,
-                optims,
-            ) as scaled_loss:
-                scaled_loss.backward()
+                optim.step()
 
-            for i in range(len(optims)):
-                optims[i].step()
-                lr_scheds[i].step()
+                lr_scheds[lidx].step()
 
             metrics.update(
                 batch,
@@ -599,7 +594,8 @@ def eval_epoch(model, loader, writer, step):
     best_eval_acc = total_acc
 
     torch.save(
-        model.module.state_dict(), "data/best_future_visited_predictor_with_grad.pt"
+        {k.replace("module.", ""): v for k, v in model.state_dict().items()},
+        "data/best_future_visited_predictor_with_grad.pt",
     )
 
 
@@ -644,27 +640,27 @@ def softmax_classifier():
 
     input_size = 512 * 6
     model = Model(input_size, num_bins)
-
     model = model.to(device)
 
-    models = [model.occ_model, model.visited_model, model.geo_model]
+    models = [model.visited_model, model.occ_model, model.geo_model]
     optims = [
         torch.optim.Adam(m.parameters(), lr=base_lr, weight_decay=0.0) for m in models
     ]
 
-    models, optims = amp.initialize(models, optims, opt_level="O2", enabled=False)
+    models, optims = amp.initialize(
+        models, optims, opt_level="O1", num_losses=len(models), enabled=False
+    )
 
-    model.occ_model = models[0]
-    model.visited_model = models[1]
-    model.geo_model = models[2]
+    models = [
+        torch.nn.parallel.DistributedDataParallel(
+            m, device_ids=[device], find_unused_parameters=True
+        )
+        for m in models
+    ]
 
     lr_scheds = [
         torch.optim.lr_scheduler.LambdaLR(optim, warmup_lr) for optim in optims
     ]
-
-    model = torch.nn.parallel.DistributedDataParallel(
-        model, device_ids=[device], output_device=device, find_unused_parameters=True
-    )
 
     step = 0
     with tensorboard.SummaryWriter(
@@ -679,7 +675,8 @@ def softmax_classifier():
             train_loader.sampler.set_epoch(i)
             val_loader.sampler.set_epoch(i)
 
-            step = train_epoch(model, optims, lr_scheds, train_loader, writer, step)
+            step = train_epoch(models, optims, lr_scheds, train_loader, writer, step)
+
             eval_epoch(model, val_loader, writer, step)
 
             if distrib.get_rank() == 0:

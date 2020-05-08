@@ -12,6 +12,7 @@ import tqdm
 from pydash import py_
 
 from nav_analysis.rl.ppo.policy import Policy
+from nav_analysis.rl.ppo.two_agent_policy import TwoAgentPolicy
 from nav_analysis.rl.ppo.utils import batch_obs
 from nav_analysis.train_ppo import construct_envs
 
@@ -22,7 +23,7 @@ def build_parser():
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--model-path", type=str, required=True)
-    parser.add_argument("--num-val", type=float, default=5e3)
+    parser.add_argument("--num-val", type=float, default=2e3)
     parser.add_argument("--num-train", type=float, default=5e4)
 
     parser.add_argument("--gpu-id", type=int, default=0)
@@ -40,22 +41,24 @@ def main():
 
     trained_ckpt = torch.load(args.model_path, map_location=device)
     trained_args = trained_ckpt["args"]
-    trained_args.task.task_config = "tasks/loopnav/gibson-public.loopnav.yaml"
+    trained_args.task.task_config = "tasks/loopnav/mp3d.loopnav.yaml"
 
     trained_args.ppo.num_processes = args.num_processes
     trained_args.general.sim_gpu_id = args.gpu_id
 
     trained_args.general.video = False
     trained_args.task.shuffle_interval = int(1e4)
+    random_actor_critic = None
 
     for split in ["train", "val"][::-1]:
         num_samples = getattr(args, f"num_{split}")
         trained_args.task.nav_task = "loopnav"
+        trained_args.task.training_stage = -1
         with construct_envs(trained_args, split, dset_measures=True) as envs, tqdm.tqdm(
             total=num_samples
         ) as pbar:
             trained_args.task.nav_task = "loopnav"
-            actor_critic = Policy(
+            policy_kwargs = dict(
                 observation_space=envs.observation_spaces[0],
                 action_space=envs.action_spaces[0],
                 hidden_size=trained_args.model.hidden_size,
@@ -65,13 +68,31 @@ def main():
                 rnn_type=trained_args.model.rnn_type,
                 resnet_baseplanes=trained_args.model.resnet_baseplanes,
                 backbone=trained_args.model.backbone,
+                task=trained_args.task.nav_task
+                if trained_args.task.training_stage == -1
+                else "loopnav",
+                norm_visual_inputs=trained_args.model.norm_visual_inputs,
                 two_headed=trained_args.model.two_headed,
-                task=trained_args.task.nav_task,
             )
-            actor_critic.load_state_dict(
+            policy_kwargs["stage_2_state_type"] = trained_args.stage_2_args.state_type
+            actor_critic = TwoAgentPolicy(**policy_kwargs)
+            stage_1_state = torch.load(
+                trained_args.stage_2_args.stage_1_model, map_location="cpu"
+            )["state_dict"]
+            stage_2_state = trained_ckpt["state_dict"]
+
+            actor_critic.agent1.load_state_dict(
                 {
                     k[len("actor_critic.") :]: v
-                    for k, v in trained_ckpt["state_dict"].items()
+                    for k, v in stage_1_state.items()
+                    if "ddp" not in k and "actor_critic" in k
+                }
+            )
+
+            actor_critic.agent2.load_state_dict(
+                {
+                    k[len("actor_critic.") :]: v
+                    for k, v in stage_2_state.items()
                     if "ddp" not in k and "actor_critic" in k
                 }
             )
@@ -79,8 +100,10 @@ def main():
             actor_critic = actor_critic.to(device)
             actor_critic.eval()
 
-            if trained_args.model.blind:
-                assert actor_critic.net.cnn is None
+            if random_actor_critic is None:
+                random_actor_critic = TwoAgentPolicy(**policy_kwargs)
+                random_actor_critic.eval()
+                random_actor_critic.to(device)
 
             observations = envs.reset()
             batch = batch_obs(observations)
@@ -93,6 +116,7 @@ def main():
                 trained_args.model.hidden_size,
                 device=device,
             )
+            random_recurrent_hidden_states = test_recurrent_hidden_states.clone()
             not_done_masks = torch.zeros(args.num_processes, 1, device=device)
             prev_actions = torch.zeros(
                 args.num_processes, 1, device=device, dtype=torch.int64
@@ -101,10 +125,8 @@ def main():
             dones = [True] * args.num_processes
             prev_infos = None
             infos = None
-            episode_lens = [0.0] * args.num_processes
             next_idx = 0
             avg_spl = 0.0
-            avg_ep_len = 0.0
             num_done = 0.0
             trajectories = [[] for _ in range(args.num_processes)]
             lmdb_env = lmdb.open(f"{args.output_path}_{split}.lmdb", map_size=1 << 40)
@@ -116,9 +138,29 @@ def main():
             with lmdb_env.begin(write=True) as txn:
                 while next_idx < num_samples:
                     with torch.no_grad():
-                        _, actions, _, _, test_recurrent_hidden_states = actor_critic.act(
+                        (
+                            _,
+                            actions,
+                            _,
+                            _,
+                            test_recurrent_hidden_states,
+                        ) = actor_critic.act(
                             batch,
                             test_recurrent_hidden_states,
+                            prev_actions,
+                            not_done_masks,
+                            deterministic=False,
+                        )
+
+                        (
+                            _,
+                            _,
+                            _,
+                            _,
+                            random_recurrent_hidden_states,
+                        ) = random_actor_critic.act(
+                            batch,
+                            random_recurrent_hidden_states,
                             prev_actions,
                             not_done_masks,
                             deterministic=False,
@@ -134,10 +176,10 @@ def main():
                         if not dones[i]:
                             trajectories[i].append(
                                 dict(
-                                    hidden_state=test_recurrent_hidden_states[:, i]
-                                    .cpu()
-                                    .numpy()
-                                    .copy(),
+                                    hidden_state=test_recurrent_hidden_states[:, i].cpu().numpy(),
+                                    random_hidden_state=random_recurrent_hidden_states[
+                                        :, i
+                                    ].cpu().numpy(),
                                     collision=int(
                                         infos[i]["collisions"]["is_collision"]
                                     ),
@@ -145,6 +187,7 @@ def main():
                                     rotations=infos[i]["ego_pose"][1].copy(),
                                     d_goal=infos[i]["geo_distances"]["dist_to_goal"],
                                     d_start=infos[i]["geo_distances"]["dist_to_start"],
+                                    actions=prev_actions[i].item(),
                                 )
                             )
                         else:
@@ -167,7 +210,7 @@ def main():
                                     k: [dic[k] for dic in trajectories[i]]
                                     for k in trajectories[i][0]
                                 }
-                                ep_info = vars(current_episodes[i])
+                                ep_info = current_episodes[i].__getstate__()
                                 ep_info["goal"] = vars(current_episodes[i].goals[0])
                                 del ep_info["goals"]
                                 v["episode"] = ep_info

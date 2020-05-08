@@ -32,9 +32,10 @@ from nav_analysis.config.default import cfg as cfg_baseline
 from nav_analysis.rl import splitnet_nav_envs
 from nav_analysis.rl.ppo import Policy
 from nav_analysis.rl.ppo.two_agent_policy import TwoAgentPolicy
+from nav_analysis.rl.ppo.memory_limited_policy import MemoryLimitedPolicy
 from nav_analysis.rl.ppo.utils import batch_obs
 from nav_analysis.rl.rnn_memory_buffer import RNNMemoryBuffer
-from nav_analysis.train_ppo import LoopNavRLEnv, NavRLEnv
+from nav_analysis.train_ppo import LoopNavRLEnv, NavRLEnv, ObsStackEnv
 import submitit
 
 
@@ -69,7 +70,7 @@ class DotDict(dict):
     __delattr__ = dict.__delitem__
 
 
-def val_env_fn(task, config_env, config_baseline, rank):
+def val_env_fn(args, task, config_env, config_baseline, rank):
     dataset = make_dataset(config_env.DATASET.TYPE, config=config_env.DATASET)
     config_env.defrost()
     config_env.SIMULATOR.SCENE = dataset.episodes[0].scene_id
@@ -92,6 +93,9 @@ def val_env_fn(task, config_env, config_baseline, rank):
         )
 
     env.seed(rank)
+
+    if args.model.max_memory_length:
+        env = ObsStackEnv(env, args.model.max_memory_length)
 
     return env
 
@@ -223,6 +227,7 @@ def construct_val_envs(args):
         env_fn_args=tuple(
             tuple(
                 zip(
+                    [args for _ in range(args.ppo.num_processes)],
                     [args.task.nav_task for _ in range(args.ppo.num_processes)],
                     env_configs,
                     baseline_configs,
@@ -323,6 +328,17 @@ def eval_checkpoint(args, current_ckpt):
 
             actor_critic.random_policy.load_state_dict(random_weights_state)
 
+    elif trained_args.model.max_memory_length:
+        policy_kwargs["max_memory_length"] = trained_args.model.max_memory_length
+        actor_critic = MemoryLimitedPolicy(**policy_kwargs)
+
+        actor_critic.load_state_dict(
+            {
+                k[len("actor_critic.") :]: v
+                for k, v in trained_ckpt["state_dict"].items()
+                if "ddp" not in k and "actor_critic" in k
+            }
+        )
     else:
 
         actor_critic = (
@@ -431,12 +447,16 @@ def eval_checkpoint(args, current_ckpt):
                         res["stage_1_d_delta"] = infos[i]["loop_d_delta"]["stage_1"]
                         res["stage_2_d_delta"] = infos[i]["loop_d_delta"]["stage_2"]
                         if (
-                            "loop_compare" in infos[i]
+                            res["success"]
+                            and "loop_compare" in infos[i]
                             and infos[i]["loop_compare"] is not None
                         ):
-                            res["loop_compare_chamfer"] = infos[i]["loop_compare"][
-                                "chamfer"
-                            ]
+                            res["loop_compare_chamfer_probe_agent"] = infos[i][
+                                "loop_compare"
+                            ]["chamfer_probe_agent"]
+                            res["loop_compare_chamfer_agent_probe"] = infos[i][
+                                "loop_compare"
+                            ]["chamfer_agent_probe"]
 
                     elif trained_args.task.nav_task == "pointnav":
                         res = {
@@ -588,7 +608,7 @@ def eval_checkpoint(args, current_ckpt):
                     stage_2_success=_avg("stage_2_success"),
                     stage_1_d_delta=_avg("stage_1_d_delta"),
                     stage_2_d_delta=_avg("stage_2_d_delta"),
-                    loop_compare=_avg("loop_compare_chamfer"),
+                    loop_compare=_avg("loop_compare_chamfer_probe_agent"),
                 )
             elif trained_args.task.nav_task == "flee":
                 pbar.set_postfix(flee_dist=_avg("flee_dist"))
@@ -705,8 +725,11 @@ class ModelEvaluator:
                             "stage-1 Success": stats_means["stage_1_success"].mean,
                             "stage-2 Success": stats_means["stage_2_success"].mean,
                             "Success": total_success / len(stats_episodes),
-                            "loop_compare_chamfer": stats_means[
-                                "loop_compare_chamfer"
+                            "loop_compare_chamfer_agent_probe": stats_means[
+                                "loop_compare_chamfer_agent_probe"
+                            ].mean,
+                            "loop_compare_chamfer_probe_agent": stats_means[
+                                "loop_compare_chamfer_probe_agent"
                             ].mean,
                         },
                         num_frames,

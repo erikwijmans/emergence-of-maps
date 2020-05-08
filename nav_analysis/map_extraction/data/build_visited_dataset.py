@@ -7,6 +7,8 @@ import msgpack
 import msgpack_numpy
 import numpy as np
 import tqdm
+import torch.nn.functional as F
+import torch
 
 num_bins = np.array([96, 96])
 bin_size = 0.25
@@ -19,7 +21,7 @@ msgpack_numpy.patch()
 
 
 def _build_dset(_env, T=5000):
-    returns = dict(xs=[], maps=[], occupancy_grids=[], d_goal=[], d_start=[])
+    returns = dict(xs=[], rxs=[], maps=[], occupancy_grids=[], d_goal=[], d_start=[])
     samples_per = 30
     _len = _env.stat()["entries"]
     episode_lens = []
@@ -34,6 +36,7 @@ def _build_dset(_env, T=5000):
             positions = value["positions"][0:T]
 
             xs = np.stack(value["hidden_state"][0:T], 0)
+            rxs = np.stack(value["random_hidden_state"][0:T], 0)
             d_goal = np.stack(value["d_goal"][0:T], 0)
             d_start = np.stack(value["d_start"][0:T], 0)
 
@@ -63,6 +66,7 @@ def _build_dset(_env, T=5000):
                 _new_maps.append(_map.copy())
 
             xs = xs[valid_ids]
+            rxs = rxs[valid_ids]
             d_goal = d_goal[valid_ids]
             d_start = d_start[valid_ids]
 
@@ -70,9 +74,20 @@ def _build_dset(_env, T=5000):
                 take_ids = np.linspace(
                     len(valid_ids) // samples_per, len(valid_ids) - 1, num=samples_per
                 ).astype(np.int64)
-                returns["occupancy_grids"].append(value["top_down_occupancy_grid"])
+                _top_down_occ = value["top_down_occupancy_grid"]
+                _top_down_occ = (
+                    torch.from_numpy(_top_down_occ)
+                    .float()
+                    .view(1, 1, *_top_down_occ.shape)
+                )
+                _top_down_occ = F.avg_pool2d(_top_down_occ, 2).squeeze() * 4
+                _top_down_occ = _top_down_occ >= 2
+                _top_down_occ = _top_down_occ.numpy().astype(np.uint8)
+
+                returns["occupancy_grids"].append(_top_down_occ)
 
                 returns["xs"].append(xs[take_ids])
+                returns["rxs"].append(rxs[take_ids])
                 returns["maps"].append(np.stack(_new_maps, 0)[take_ids])
                 returns["d_goal"].append(d_goal[take_ids])
                 returns["d_start"].append(d_start[take_ids])
@@ -95,7 +110,7 @@ def _build_dset(_env, T=5000):
 
 
 for split in ["train", "val"][::-1]:
-    fname = f"data/map_extraction/positions_maps/loopnav-with-grad_{split}"
+    fname = f"data/map_extraction/positions_maps/loopnav-final-mp3d-blind-with-random-states_{split}"
     with lmdb.open(fname + ".lmdb") as _env:
         returns = _build_dset(_env)
 

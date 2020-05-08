@@ -4,6 +4,7 @@ import glob
 import itertools
 import shlex
 import os.path as osp
+import tqdm
 
 ENV_NAME_TEMPLATE = (
     "mp3d-gibson-all-{task_type}-stage-2-{state_type}-state-final-run_*_*-{input_type}"
@@ -78,9 +79,11 @@ executor.update_parameters(
 
 jobs = []
 with executor.batch():
-    for args in build_all_args():
+    for args in tqdm.tqdm(build_all_args()):
         jobs.append(executor.submit(ModelEvaluator(), args))
 
+print("Started", len(jobs), "jobs")
 
-for job in jobs:
+
+for job in tqdm.tqdm(jobs):
     print(job.results())
