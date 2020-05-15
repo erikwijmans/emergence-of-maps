@@ -38,7 +38,7 @@ def create_occupancy_grid_mask(visited_map, rank=2, napply=1):
 class VisitedDataset(torch.utils.data.Dataset):
     bins = None
 
-    def __init__(self, split):
+    def __init__(self, split, state_type="trained"):
         super().__init__()
         global num_bins
         self.split = split
@@ -48,6 +48,7 @@ class VisitedDataset(torch.utils.data.Dataset):
         self._len = self._f.attrs["len"]
         self._samples_per = self._f.attrs["samples_per"]
         num_bins = self._f.attrs["maps_shape"][()]
+        self.state_type = state_type
 
         self._f = None
 
@@ -59,13 +60,14 @@ class VisitedDataset(torch.utils.data.Dataset):
         ].astype(np.int64)
         _future_map = self._f["maps"][idx // self._samples_per][-1].astype(np.int64)
 
+        state_key = "xs" if self.state_type == "trained" else "rxs"
+
         xs = np.reshape(
-            self._f["xs"][idx // self._samples_per][idx % self._samples_per], -1
+            self._f[state_key][idx // self._samples_per][idx % self._samples_per], -1
         )
         grid = self._f["occupancy_grids"][idx // self._samples_per].astype(np.int64)
 
-        mask = create_occupancy_grid_mask(_map, napply=2)
-        mask = np.ones_like(mask).astype(np.bool)
+        mask = torch.from_numpy(create_occupancy_grid_mask(_map, napply=4)) == 1.0
 
         d_goal = self._f["d_goal"][idx // self._samples_per][idx % self._samples_per]
         d_start = self._f["d_start"][idx // self._samples_per][idx % self._samples_per]
@@ -138,13 +140,25 @@ def _make_layer(inp, out, p=0.0):
     )
 
 
-def _make_coord_deconv(inp, out, p=0.0):
+class SkipConnection(nn.Module):
+    def __init__(self, fn):
+        super().__init__()
+        self.fn = fn
+
+    def forward(self, x):
+        residual = x
+        x = self.fn(x)
+
+        return F.relu(x + residual, True)
+
+
+def _make_coord_deconv(inp, out, p=0.05):
     return nn.Sequential(
         nn.Dropout2d(p=p), CoordDeconv(inp, out, 2), nn.BatchNorm2d(out), nn.ReLU(True)
     )
 
 
-def _make_coord_conv(inp, out, p=0.0):
+def _make_coord_conv(inp, out, p=0.05):
     return nn.Sequential(
         nn.Dropout2d(p=p),
         CoordConv(inp, out, 3, bias=False),
@@ -161,7 +175,7 @@ class BaseModel(nn.Module):
         hidden_size = 512
         div = 16
         self.hidden_spatial_size = np.array(
-            [64, num_bins[0] // div, num_bins[1] // div]
+            [128, num_bins[0] // div, num_bins[1] // div]
         )
         self.hidden_reshape = nn.Sequential(
             _make_layer(input_size, hidden_size),
@@ -169,11 +183,11 @@ class BaseModel(nn.Module):
         )
 
         self.backbone = nn.Sequential(
-            _make_coord_conv(64, 64),
+            _make_coord_conv(128, 128),
+            _make_coord_deconv(128, 128),
+            _make_coord_conv(128, 64),
             _make_coord_deconv(64, 64),
             _make_coord_conv(64, 32),
-            _make_coord_deconv(32, 32),
-            _make_coord_conv(32, 32),
             _make_coord_deconv(32, 32),
             _make_coord_conv(32, 32),
             _make_coord_deconv(32, 32),
@@ -280,34 +294,32 @@ class FocalLoss:
         self.weights = self.weights.to(device)
         self.gamma = self.gamma.to(device)
 
-        if self.gamma > 0.0:
+        loss = F.cross_entropy(logits, y, weight=self.weights, reduction="none")
 
-            loss = F.cross_entropy(logits, y, weight=self.weights, reduction="none")
-
-            if mask is not None:
-                loss = torch.masked_select(loss, mask.view(-1))
-
-            with torch.no_grad():
-                probs = F.softmax(logits.detach(), -1)
-                focal_weights = (
-                    torch.gather(1 - probs, dim=-1, index=y.view(-1, 1))
-                    .pow(self.gamma)
-                    .view(-1)
-                )
-
-            return focal_weights * loss
-        else:
-            return torch.masked_select(
-                F.cross_entropy(logits, y, weight=self.weights), mask.view(-1)
+        with torch.no_grad():
+            probs = F.softmax(logits.detach(), -1)
+            focal_weights = (
+                torch.gather(1 - probs, dim=-1, index=y.view(-1, 1))
+                .pow(self.gamma)
+                .view(-1)
             )
+
+        loss = focal_weights * loss
+
+        if mask is not None:
+            loss = torch.masked_select(loss, mask.view(-1))
+
+        return loss
 
 
 focal_loss = FocalLoss()
 
 
 @torch.no_grad()
-def mapping_acc(logits, y, mask=None):
-    preds = torch.argmax(logits, -1)
+def mapping_acc(logits, y, mask=None, preds=None):
+    if preds is None:
+        preds = torch.argmax(logits, -1)
+
     corrects = preds == y
 
     gt_false = y == 0
@@ -356,10 +368,11 @@ class VisitedEpochMetrics:
             self.total_visited_acc, device=self.device
         ).sum(0)
 
-        distrib.all_reduce(self.total_visited_acc)
-        distrib.all_reduce(self.total_unbal_visited_acc)
-        distrib.all_reduce(self.total_visited_loss)
-        distrib.all_reduce(self.visited_count)
+        if distrib.is_initialized():
+            distrib.all_reduce(self.total_visited_acc)
+            distrib.all_reduce(self.total_unbal_visited_acc)
+            distrib.all_reduce(self.total_visited_loss)
+            distrib.all_reduce(self.visited_count)
 
         self.total_visited_acc = (
             self.total_visited_acc[0] / self.total_visited_acc[1]
@@ -418,10 +431,11 @@ class EpochMetrics:
             self.total_occupancy_acc, device=self.device
         ).sum(0)
 
-        distrib.all_reduce(self.total_occupancy_acc)
-        distrib.all_reduce(self.total_unbal_occupancy_acc)
-        distrib.all_reduce(self.total_occupancy_loss)
-        distrib.all_reduce(self.occupancy_count)
+        if distrib.is_initialized():
+            distrib.all_reduce(self.total_occupancy_acc)
+            distrib.all_reduce(self.total_unbal_occupancy_acc)
+            distrib.all_reduce(self.total_occupancy_loss)
+            distrib.all_reduce(self.occupancy_count)
 
         self.total_occupancy_acc = (
             self.total_occupancy_acc[0] / self.total_occupancy_acc[1]
@@ -528,7 +542,7 @@ def train_epoch(models, optims, lr_scheds, loader, writer, step):
 best_eval_acc = 0.0
 
 
-def eval_epoch(model, loader, writer, step):
+def eval_epoch(model, loader, writer, step, model_name):
     global best_eval_acc
     device = next(model.parameters()).device
     model.eval()
@@ -536,7 +550,6 @@ def eval_epoch(model, loader, writer, step):
     metrics = EpochMetrics(device)
 
     for batch in loader:
-
         with torch.no_grad():
             batch = tuple(v.to(device) for v in batch)
             x, y_past, y_future, grid, mask, _, _ = batch
@@ -562,14 +575,16 @@ def eval_epoch(model, loader, writer, step):
     if distrib.get_rank() == 0:
         writer.add_scalars(
             "visited_loss",
-            {"val_future": metrics.future_visited.total_visited_loss},
+            {"val_future": metrics.future_visited.total_visited_loss.item()},
             step,
         )
         writer.add_scalars(
-            "visited_loss", {"val_past": metrics.past_visited.total_visited_loss}, step
+            "visited_loss",
+            {"val_past": metrics.past_visited.total_visited_loss.item()},
+            step,
         )
         writer.add_scalars(
-            "occupancy_loss", {"val": metrics.total_occupancy_loss}, step
+            "occupancy_loss", {"val": metrics.total_occupancy_loss.item()}, step
         )
         writer.add_scalars(
             "visited_bal_acc",
@@ -594,20 +609,19 @@ def eval_epoch(model, loader, writer, step):
     best_eval_acc = total_acc
 
     torch.save(
-        {k.replace("module.", ""): v for k, v in model.state_dict().items()},
-        "data/best_future_visited_predictor_with_grad.pt",
+        {k.replace("module.", ""): v for k, v in model.state_dict().items()}, model_name
     )
 
 
-def softmax_classifier():
+def softmax_classifier(args):
     local_rank, _ = init_distrib_slurm()
     device = torch.device("cuda", local_rank)
     torch.cuda.set_device(device)
 
     batch_size = 128
 
-    train_dset = VisitedDataset("train")
-    val_dset = VisitedDataset("val")
+    train_dset = VisitedDataset("train", state_type=args.state_type)
+    val_dset = VisitedDataset("val", state_type=args.state_type)
 
     train_loader = torch.utils.data.DataLoader(
         train_dset,
@@ -644,7 +658,7 @@ def softmax_classifier():
 
     models = [model.visited_model, model.occ_model, model.geo_model]
     optims = [
-        torch.optim.Adam(m.parameters(), lr=base_lr, weight_decay=0.0) for m in models
+        torch.optim.AdamW(m.parameters(), lr=base_lr, weight_decay=1e-5) for m in models
     ]
 
     models, optims = amp.initialize(
@@ -664,7 +678,9 @@ def softmax_classifier():
 
     step = 0
     with tensorboard.SummaryWriter(
-        log_dir="map_extraction_runs/future_visited_predictor",
+        log_dir="map_extraction_runs/future_visited_predictor-{}".format(
+            args.state_type
+        ),
         purge_step=step,
         flush_secs=30,
     ) if distrib.get_rank() == 0 else contextlib.suppress() as writer, tqdm.tqdm(
@@ -677,7 +693,13 @@ def softmax_classifier():
 
             step = train_epoch(models, optims, lr_scheds, train_loader, writer, step)
 
-            eval_epoch(model, val_loader, writer, step)
+            eval_epoch(
+                model,
+                val_loader,
+                writer,
+                step,
+                model_name="data/best_occ_predictor-{}.pt".format(args.state_type),
+            )
 
             if distrib.get_rank() == 0:
                 pbar.update()
@@ -685,4 +707,9 @@ def softmax_classifier():
 
 
 if __name__ == "__main__":
-    softmax_classifier()
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--state-type", type=str, default="trained", choices={"trained", "random"}
+    )
+
+    softmax_classifier(parser.parse_args())

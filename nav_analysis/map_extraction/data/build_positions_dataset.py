@@ -176,10 +176,14 @@ def main():
                         if not dones[i]:
                             trajectories[i].append(
                                 dict(
-                                    hidden_state=test_recurrent_hidden_states[:, i].cpu().numpy(),
+                                    hidden_state=test_recurrent_hidden_states[:, i]
+                                    .cpu()
+                                    .numpy(),
                                     random_hidden_state=random_recurrent_hidden_states[
                                         :, i
-                                    ].cpu().numpy(),
+                                    ]
+                                    .cpu()
+                                    .numpy(),
                                     collision=int(
                                         infos[i]["collisions"]["is_collision"]
                                     ),

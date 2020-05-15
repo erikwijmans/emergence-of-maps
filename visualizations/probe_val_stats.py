@@ -41,6 +41,9 @@ sns.set(style="whitegrid", font_scale=1.3)
 
 
 def mean_ci(vals, sigfigs=1):
+    if len(vals) == 0:
+        return 0.0, 0.0
+
     vals = np.array(vals)
     sem = 1.96 * np.std(vals) / np.sqrt(len(vals))
     return np.round(np.mean(vals), sigfigs), np.round(sem, sigfigs + 1)
@@ -56,9 +59,11 @@ def build_parser():
     return parser
 
 
-def make_row(chamfers, success, spls):
+def make_row(chamfers_agent_probe, chamfers_probe_agent, success, spls):
     row = ""
-    for i, metric in enumerate([chamfers, success, spls]):
+    for i, metric in enumerate(
+        [chamfers_agent_probe, chamfers_probe_agent, success, spls]
+    ):
         if i != 0:
             m, std = mean_ci(metric)
             row += " & "
@@ -81,7 +86,8 @@ def extract_scalars(multiplexer, run, tag, vmul=1.0):
         tensor_events = multiplexer.Tensors(run, tag)
     except KeyError as e:
         raise e
-        return []
+        return [0.0] * 500
+
     values = [
         (event.step, tf.make_ndarray(event.tensor_proto).item())
         for event in tensor_events
@@ -105,6 +111,31 @@ def create_multiplexer(logdir, run_names):
     )
     multiplexer.Reload()
     return multiplexer
+
+
+def get_chamf_safe(rn_spls, best_idx, multiplexer, chamf1_key, chamf2_key, split, mul):
+    try:
+        chamf1 = extract_scalars(multiplexer, chamf1_key, split, mul)
+    except KeyError:
+        return None, None
+
+    try:
+        chamf2 = extract_scalars(multiplexer, chamf2_key, split, mul)
+    except KeyError:
+        return None, None
+
+    best_step = rn_spls[best_idx][0]
+    for step, v in chamf1:
+        if best_step == step:
+            chamf1 = v
+            break
+
+    for step, v in chamf2:
+        if best_step == step:
+            chamf2 = v
+            break
+
+    return chamf1, chamf2
 
 
 def main():
@@ -135,7 +166,8 @@ def main():
     for v in py_().values().flatten()(all_logs):
         all_run_names.append(_make_key(v, "spl"))
         all_run_names.append(_make_key(v, "success"))
-        all_run_names.append(_make_key(v, "loop_compare_chamfer"))
+        all_run_names.append(_make_key(v, "loop_compare.chamfer_probe_agent"))
+        all_run_names.append(_make_key(v, "loop_compare.chamfer_agent_probe"))
 
     multiplexer = create_multiplexer(args.logdir, all_run_names)
 
@@ -148,7 +180,8 @@ def main():
     ):
         spls = []
         successes = []
-        chamfers = []
+        chamfers_agent_probe = []
+        chamfers_probe_agent = []
         for rn in all_logs[(task, state, input_type)]:
             rn_spls = [
                 s[1]
@@ -156,8 +189,13 @@ def main():
                     multiplexer, _make_key(rn, "spl"), "val", 100.0
                 )
             ]
+            if len(rn_spls) < 10:
+                continue
 
             best_idx = np.argmax(rn_spls)
+
+            if input_type == "no-inputs" and state == "trained":
+                print(rn, best_idx)
 
             spls.append(rn_spls[best_idx])
 
@@ -167,14 +205,22 @@ def main():
                 ][1]
             )
 
-            chamfers.append(
-                extract_scalars(
-                    multiplexer, _make_key(rn, "loop_compare_chamfer"), "val", 1.0
-                )[best_idx][1]
+            chamf1, chamf2 = get_chamf_safe(
+                extract_scalars(multiplexer, _make_key(rn, "spl"), "val", 100.0),
+                best_idx,
+                multiplexer,
+                _make_key(rn, "loop_compare.chamfer_agent_probe"),
+                _make_key(rn, "loop_compare.chamfer_probe_agent"),
+                "val",
+                1.0,
             )
 
+            if chamf1 is not None:
+                chamfers_agent_probe.append(chamf1)
+                chamfers_probe_agent.append(chamf2)
+
         print(input_type, state, task)
-        print(make_row(chamfers, successes, spls))
+        print(make_row(chamfers_agent_probe, chamfers_probe_agent, successes, spls))
 
 
 if __name__ == "__main__":

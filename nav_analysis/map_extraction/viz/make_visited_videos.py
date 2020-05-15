@@ -60,10 +60,10 @@ def scale_up_color(img, scaling: int = 4):
     return new_img
 
 
-def colorize_map(_map):
+def colorize_map(_map, coloring=d3_40_colors_rgb):
     img = Image.new("P", tuple(reversed(_map.shape)))
     img.putdata(_map.flatten().astype(np.uint8))
-    img.putpalette(d3_40_colors_rgb.flatten())
+    img.putpalette(np.array(coloring, dtype=np.uint8).flatten())
     img = img.convert("RGBA")
     img = np.array(img)
 

@@ -61,29 +61,28 @@ def build_all_args():
             )
 
 
-executor = submitit.AutoExecutor(
-    folder="/checkpoint/erikwijmans/submitit/%j", cluster="slurm"
-)
-executor.update_parameters(
-    mem_gb=50,
-    gpus_per_node=1,
-    tasks_per_node=1,
-    cpus_per_task=10,
-    nodes=1,
-    timeout_min=60 * 24,
-    slurm_partition="learnfair",
-    name="nav-analysis-eval",
-    slurm_signal_delay_s=60,
-)
+if __name__ == "__main__":
+    executor = submitit.AutoExecutor(
+        folder="/checkpoint/erikwijmans/submitit/%j", cluster="slurm"
+    )
+    executor.update_parameters(
+        mem_gb=50,
+        gpus_per_node=1,
+        tasks_per_node=1,
+        cpus_per_task=10,
+        nodes=1,
+        timeout_min=60 * 24,
+        slurm_partition="learnfair",
+        name="nav-analysis-eval",
+        slurm_signal_delay_s=60,
+    )
 
+    jobs = []
+    with executor.batch():
+        for args in tqdm.tqdm(build_all_args()):
+            jobs.append(executor.submit(ModelEvaluator(), args))
 
-jobs = []
-with executor.batch():
-    for args in tqdm.tqdm(build_all_args()):
-        jobs.append(executor.submit(ModelEvaluator(), args))
+    print("Started", len(jobs), "jobs")
 
-print("Started", len(jobs), "jobs")
-
-
-for job in tqdm.tqdm(jobs):
-    print(job.results())
+    for job in tqdm.tqdm(jobs):
+        print(job.results())

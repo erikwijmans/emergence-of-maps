@@ -267,7 +267,7 @@ def eval_checkpoint(args, current_ckpt):
     trained_args.ppo.num_processes = args.num_processes
 
     trained_args.task.nav_task = args.nav_task
-    trained_args.task.max_episode_timesteps = 1000
+    trained_args.task.max_episode_timesteps = 2000
 
     if trained_args.task.nav_task == "pointnav":
         key_spl = "spl"
@@ -451,12 +451,12 @@ def eval_checkpoint(args, current_ckpt):
                             and "loop_compare" in infos[i]
                             and infos[i]["loop_compare"] is not None
                         ):
-                            res["loop_compare_chamfer_probe_agent"] = infos[i][
-                                "loop_compare"
-                            ]["chamfer_probe_agent"]
-                            res["loop_compare_chamfer_agent_probe"] = infos[i][
-                                "loop_compare"
-                            ]["chamfer_agent_probe"]
+                            res.update(
+                                {
+                                    "loop_compare." + k: v
+                                    for k, v in infos[i]["loop_compare"].items()
+                                }
+                            )
 
                     elif trained_args.task.nav_task == "pointnav":
                         res = {
@@ -565,7 +565,6 @@ def eval_checkpoint(args, current_ckpt):
                         : top_down_map.shape[0], 1024 : 1024 + top_down_map.shape[1],
                     ] = top_down_map
                     rgb_frames[i].append(frame)
-                    trained_ckpt["num_frames"]
 
             current_episode_reward *= not_done_masks
 
@@ -621,7 +620,8 @@ def eval_checkpoint(args, current_ckpt):
         stats_means,
         stats_episodes,
         trained_args,
-        trained_ckpt["num_frames"],
+        float(trained_ckpt["num_frames"]),
+        args
     )
 
 
@@ -695,6 +695,7 @@ class ModelEvaluator:
                     stats_episodes,
                     trained_args,
                     num_frames,
+                    _
                 ) = eval_checkpoint(args, current_ckpt)
 
                 if trained_args.task.nav_task in {"loopnav", "teleportnav"}:
@@ -717,22 +718,24 @@ class ModelEvaluator:
                         "Average episode stage-2 SPL: {:.6f}".format(avg_stage_2_spl)
                     )
 
-                    tb_writer.add_scalars(
-                        "val",
+                    val_metrics = {
+                        "stage-1 SPL": avg_stage_1_spl,
+                        "stage-2 SPL": avg_stage_2_spl,
+                        "stage-1 Success": stats_means["stage_1_success"].mean,
+                        "stage-2 Success": stats_means["stage_2_success"].mean,
+                        "Success": total_success / len(stats_episodes),
+                    }
+
+                    val_metrics.update(
                         {
-                            "stage-1 SPL": avg_stage_1_spl,
-                            "stage-2 SPL": avg_stage_2_spl,
-                            "stage-1 Success": stats_means["stage_1_success"].mean,
-                            "stage-2 Success": stats_means["stage_2_success"].mean,
-                            "Success": total_success / len(stats_episodes),
-                            "loop_compare_chamfer_agent_probe": stats_means[
-                                "loop_compare_chamfer_agent_probe"
-                            ].mean,
-                            "loop_compare_chamfer_probe_agent": stats_means[
-                                "loop_compare_chamfer_probe_agent"
-                            ].mean,
-                        },
-                        num_frames,
+                            k: v.mean
+                            for k, v in stats_means.items()
+                            if "loop_compare" in k
+                        }
+                    )
+
+                    tb_writer.add_scalars(
+                        "val", val_metrics, num_frames,
                     )
                 elif trained_args.task.nav_task == "pointnav":
                     avg_spl = py_().values().map("spl").mean()(stats_episodes)

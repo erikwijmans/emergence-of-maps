@@ -83,17 +83,17 @@ def build_visitation_dataset_cache(lmdb_filename, time_range_size):
             ele = msgpack_numpy.unpackb(v, raw=False)
             hidden_state = ele["hidden_state"]
             positions = ele["positions"]
-            rotations = ele["rotations"]
+            actions = ele["actions"]
 
             stop_pos = -1
-            for i in range(1, len(positions)):
-                if did_stop(
-                    positions[i - 1], rotations[i - 1], positions[i], rotations[i]
-                ):
+            for i in range(len(positions)):
+                if actions[i] == 3:
                     stop_pos = i
                     break
 
             assert stop_pos > 0
+            hidden_state = hidden_state[0:stop_pos]
+            positions = positions[0:stop_pos]
 
             episode_ranges.append(
                 (

@@ -91,6 +91,6 @@ srun --mpi=pmix_v3 --kill-on-bad-exit=1 \
     "logging.log_file=${EXP_DIR}/log.txt" \
     "logging.checkpoint_folder=${CHECKPOINT}" \
     "logging.tensorboard_dir=runs/probes/${ENV_NAME}" \
-    stage_2_args.stage_1_state=/private/home/erikwijmans/projects/navigation-analysis-habitat/data/checkpoints/mp3d-gibson-all-loopnav-stage-1-final-run_${base_agent_idx}-blind/ckpt.175.pth \
+    stage_2_args.stage_1_model=/private/home/erikwijmans/projects/navigation-analysis-habitat/data/checkpoints/mp3d-gibson-all-loopnav-stage-1-final-run_${base_agent_idx}-blind/ckpt.175.pth \
     ${extra_opts[@]}
 

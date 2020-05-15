@@ -47,7 +47,7 @@ class RNNMemoryBuffer(object):
         obs = collections.defaultdict(list)
         prev_acts = []
         masks = []
-        for i in range(len(self.input_buffers[0])):
+        for i in range(self.memory_length):
             for j in needs_hidden:
                 inp = self.input_buffers[j][i]
                 for k, v in inp[0].items():
