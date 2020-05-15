@@ -453,6 +453,7 @@ def main():
             val_l2_error_sem=[],
             val_norm_l2_error_sem=[],
         )
+
         for log_dir in tqdm.tqdm(log_dirs):
             if len(glob.glob(osp.join(log_dir, "*.ckpt"))) == 0:
                 continue
