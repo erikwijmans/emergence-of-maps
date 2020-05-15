@@ -135,6 +135,9 @@ class _SE3:
             return quat_rotate_vector(self.rot, other) + self.trans
 
 
+SE3 = _SE3
+
+
 class NavigationEpisode(Episode):
     """Class for episode specification that includes initial position and
     rotation of agent, scene name, goal and optional shortest paths. An
@@ -844,7 +847,7 @@ class LoopCompare(habitat.Measure):
         self._episode_stage = 0
         self._stage_paths = [[np.array(episode.start_position)], []]
         self._episode_successes = [False, False]
-        self._metric = dict(dtw=None, chamfer=None)
+        self._metric = None
 
     def _path_length(self, path):
         _len = 0.0
@@ -857,6 +860,7 @@ class LoopCompare(habitat.Measure):
         return max(_len, 1e-2)
 
     def _compute_metric(self):
+        self._metric = dict()
         pdist = np.zeros(
             (len(self._stage_paths[1]), len(self._stage_paths[0])), dtype=np.float32
         )
@@ -868,6 +872,9 @@ class LoopCompare(habitat.Measure):
 
         self._metric["chamfer_probe_agent"] = np.min(pdist, axis=1).mean()
         self._metric["chamfer_agent_probe"] = np.min(pdist, axis=0).mean()
+        self._metric["chamfer_delta"] = (
+            np.min(pdist, axis=0).mean() - np.min(pdist, axis=1).mean()
+        )
         return
 
         s0_path = np.stack(self._stage_paths[0]).astype(np.float32)
