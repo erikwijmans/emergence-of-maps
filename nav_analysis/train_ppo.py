@@ -160,7 +160,8 @@ class NavRLEnv(habitat.RLEnv):
                 )
             )
 
-        observations = filter_obs(observations, self._give_obs)
+        # Do not filter on reset!
+        #  observations = filter_obs(observations, self._give_obs)
 
         return observations
 
@@ -331,15 +332,7 @@ class LoopNavRLEnv(NavRLEnv):
                             "STAGE-2 ENDING_ROTATION: {}".format(agent_state.rotation)
                         )
 
-        if (
-            action == SimulatorActions.STOP.value and self._episode_stage == 0
-        ) and not self._config_env.LOOPNAV_GIVE_RETURN_OBS:
-            self._give_obs = False
-
         observations, reward, done, info = super().step(action)
-        # update episode stage
-        if action == SimulatorActions.STOP.value and self._episode_stage == 0:
-            self._episode_stage = 1
 
         if teleport:
             self._env.sim.set_agent_state(
@@ -355,6 +348,16 @@ class LoopNavRLEnv(NavRLEnv):
                 )
             )
             self._previous_target_distance = self._distance_target()
+
+        # Do this all after getting observations to world-model probes their first input
+        if (
+            action == SimulatorActions.STOP.value and self._episode_stage == 0
+        ) and not self._config_env.LOOPNAV_GIVE_RETURN_OBS:
+            self._give_obs = False
+
+        # update episode stage
+        if action == SimulatorActions.STOP.value and self._episode_stage == 0:
+            self._episode_stage = 1
 
         if curr_episode_over:
             done = True

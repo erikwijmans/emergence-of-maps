@@ -200,7 +200,7 @@ def main():
                     + past_visited_probs * np.array([[[0, 0, 255]]])
                 ).astype(np.uint8)
 
-                heat_map = (0.5 * past_heat_map + 0.5 * future_heat_map).astype(
+                heat_map = (1.0 * past_heat_map + 0.0 * future_heat_map).astype(
                     np.uint8
                 )
 
@@ -211,8 +211,17 @@ def main():
                 occupancy_mask = np.ones_like(occupancy_mask)
                 train_occupancy_mask = np.ones_like(train_occupancy_mask)
 
-                _tmp = top_down_occupancy_grid.copy()
+                _top_down_occ = top_down_occupancy_grid.copy()
+                _top_down_occ = (
+                    torch.from_numpy(_top_down_occ)
+                    .float()
+                    .view(1, 1, *_top_down_occ.shape)
+                )
+                _top_down_occ = F.avg_pool2d(_top_down_occ, 2).squeeze() * 4
+                _top_down_occ = _top_down_occ >= 2
+                _tmp = _top_down_occ.numpy().astype(np.uint8)
                 _tmp[x, y] = 2
+
                 gt_occupancy = colorize_map(_tmp)
                 predicted_occupancy = (
                     torch.argmax(occupancy_logits[j], -1).cpu().numpy()
@@ -244,7 +253,8 @@ def main():
                 goal_color_key = 4
 
                 def _add_goal(img):
-                    img[gx, gy] = d3_40_colors_rgb[goal_color_key]
+                    if 0 <= gx < img.shape[0] and 0 <= gy < img.shape[1]:
+                        img[gx, gy] = d3_40_colors_rgb[goal_color_key]
 
                 ref_rotation = quat_from_coeffs(value["rotations"][j])
 

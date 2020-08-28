@@ -7,9 +7,11 @@ from habitat_sim.utils.common import quat_from_coeffs
 import tqdm
 
 dbase = "/private/home/erikwijmans/projects/navigation-analysis-habitat/data/map_extraction/positions_maps/loopnav-final-mp3d-blind_val.lmdb"
+dbase = "/private/home/erikwijmans/projects/navigation-analysis-habitat/data/map_extraction/positions_maps/loopnav-final-mp3d-blind_val.lmdb"
+dbase = "/srv/share3/ewijmans3/emergence-of-maps-data/map_extraction/positions_maps/loopnav-final-mp3d-blind_val.lmdb"
 #  dbase = "/private/home/erikwijmans/projects/navigation-analysis-habitat/data/map_extraction/positions_maps/devel.lmdb"
 
-with lmdb.open(dbase, map_size=1 << 40,) as lmdb_env:
+with lmdb.open(dbase, map_size=1 << 40,readonly=True) as lmdb_env:
     num_elements = lmdb_env.stat()["entries"]
 
 app = Flask(__name__)
@@ -150,7 +152,7 @@ def build_display_info(idx):
 @app.route("/")
 def main():
     first_unlabeled = 0
-    with lmdb.open(dbase, map_size=1 << 40,) as lmdb_env, lmdb_env.begin(
+    with lmdb.open(dbase, map_size=1 << 40,readonly=True) as lmdb_env, lmdb_env.begin(
         buffers=True
     ) as txn:
         for first_unlabeled in range(num_elements):
@@ -171,6 +173,7 @@ def get_task_data():
 
 @app.route("/api/save-result", methods=["POST"])
 def save_result():
+    return jsonify(False)
     data = request.get_json()
     idx = santize_idx(int(data["idx"]))
 

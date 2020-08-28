@@ -9,16 +9,12 @@
 #SBATCH --partition=dev
 #SBATCH --time=72:00:00
 
-. /private/home/erikwijmans/miniconda3/etc/profile.d/conda.sh
+. /nethome/ewijmans3/miniconda3/etc/profile.d/conda.sh
 conda deactivate
-conda activate nav-analysis-base
+conda activate hsim-dev
 
 export PYTHONPATH=$(pwd)/habitat-api-navigation-analysis
 
-module purge
-module load cuda/10.1
-module load cudnn/v7.6.5.32-cuda.10.1
-module load NCCL/2.5.6-1-cuda.10.1
 
 export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu/nvidia-opengl:${LD_LIBRARY_PATH}
 export GLOG_minloglevel=2
@@ -33,19 +29,21 @@ CHECKPOINT_MODEL_DIR="data/checkpoints/gibson-2plus-resnet18-frn-step-ramp-no-me
 CHECKPOINT_MODEL_DIR="data/checkpoints/mp3d-only-loopnav-stage-2-trained-state-blind"
 CHECKPOINT_MODEL_DIR="data/checkpoints/mp3d-gibson-all-loopnav-stage-2-random-state-blind"
 CHECKPOINT_MODEL_DIR="data/checkpoints/mp3d-gibson-all-loopnav-stage-2-random-state-no-inputs"
+CHECKPOINT_MODEL_DIR="data/checkpoints/probes/mp3d-gibson-all-teleportnav-stage-2-zero-state-final-run_0_2-no-inputs/ckpt.124.pth"
+CHECKPOINT_MODEL_DIR="data/checkpoints/mp3d-gibson-all-loopnav-stage-1-v5-blind"
 ENV_NAME=$(basename ${CHECKPOINT_MODEL_DIR})
 # ENV_NAME="testing"
 NUM_PROCESSES=18
-TASK_CONFIG="tasks/loopnav/mp3d.loopnav.yaml"
+TASK_CONFIG="tasks/loopnav/mp3d-gibson.loopnav.yaml"
 # TASK_CONFIG="tasks/loopnav/gibson-public.loopnav.yaml"
-NAV_TASK="teleportnav"
+NAV_TASK="pointnav"
 
 if [ ${NAV_TASK} == "loopnav" ]
 then
     echo "FIX ME"
-    export LOG_FILE="/private/home/erikwijmans/projects/navigation-analysis-habitat/data/eval/eval.${ENV_NAME}.pointnav.log"
+    export LOG_FILE="$(pwd)/data/eval/eval.${ENV_NAME}.pointnav.log"
 else
-    export LOG_FILE="/private/home/erikwijmans/projects/navigation-analysis-habitat/data/eval/eval.${ENV_NAME}.pointnav.log"
+    export LOG_FILE="$(pwd)/data/eval/eval.${ENV_NAME}.pointnav.log"
     # export LOG_FILE="/private/home/akadian/navigation-analysis/navigation-analysis-habitat/evaluate.blind.loopnav.T_S.log"
     # export POSITIONS_FILE="/private/home/akadian/navigation-analysis/navigation-analysis-habitat/sts_episodes.pkl"
 fi
@@ -54,12 +52,12 @@ rm ${LOG_FILE}
 COUNT_TEST_EPISODES=1008
 # COUNT_TEST_EPISODES=994
 VIDEO=0
-OUT_DIR_VIDEO="/private/home/erikwijmans/projects/navigation-analysis-habitat/data/eval/videos/${ENV_NAME}"
+OUT_DIR_VIDEO="$(pwd)/data/eval/videos/${ENV_NAME}"
 
 # for i in 1 2 4 8 16 32 64 96 128 192 256 512
 # do
 set -x
-python -u -m nav_analysis.evaluate_ppo \
+srun python -u -m nav_analysis.evaluate_ppo \
     --checkpoint-model-dir ${CHECKPOINT_MODEL_DIR} \
     --sim-gpu-ids ${SIM_GPU_IDS} \
     --pth-gpu-id ${PTH_GPU_ID} \
@@ -71,7 +69,9 @@ python -u -m nav_analysis.evaluate_ppo \
     --eval-task-config ${TASK_CONFIG} \
     --nav-task ${NAV_TASK} \
     --tensorboard-dir "runs/${ENV_NAME}" \
-    --nav-env-verbose 0
+    --nav-env-verbose 0 \
+    --exit-immediately
+    # --tensorboard-dir "runs/${ENV_NAME}" \
     # --max-memory-length ${i}
 # done
 

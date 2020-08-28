@@ -36,7 +36,6 @@ from nav_analysis.rl.ppo.memory_limited_policy import MemoryLimitedPolicy
 from nav_analysis.rl.ppo.utils import batch_obs
 from nav_analysis.rl.rnn_memory_buffer import RNNMemoryBuffer
 from nav_analysis.train_ppo import LoopNavRLEnv, NavRLEnv, ObsStackEnv
-import submitit
 
 
 CFG_DIR = osp.join(osp.dirname(nav_analysis.__file__), "configs")
@@ -60,7 +59,7 @@ class StreamingMean:
         return self._mean
 
 
-if getpass.getuser() == "erikwijmans":
+if True:
     logger.handlers[-1].setLevel(level=logging.WARNING)
 
 
@@ -110,7 +109,9 @@ def images_to_video(images, output_dir, video_name):
 
 
 def poll_checkpoint_folder(checkpoint_folder, previous_ckpt_ind, exit_immediately):
-    assert os.path.isdir(checkpoint_folder), "invalid checkpoint folder path"
+    if not os.path.isdir(checkpoint_folder):
+        return "done" if previous_ckpt_ind != -1 else checkpoint_folder
+
     models = os.listdir(checkpoint_folder)
     models = list(filter(lambda x: x.endswith(".pth"), models))
     models.sort(key=lambda x: int(x.strip().split(".")[1]))
@@ -296,7 +297,11 @@ def eval_checkpoint(args, current_ckpt):
         policy_kwargs["stage_2_state_type"] = trained_args.stage_2_args.state_type
         actor_critic = TwoAgentPolicy(**policy_kwargs)
         stage_1_state = torch.load(
-            trained_args.stage_2_args.stage_1_model, map_location="cpu"
+            trained_args.stage_2_args.stage_1_model.replace(
+                "/private/home/erikwijmans/projects/navigation-analysis-habitat/",
+                "/nethome/ewijmans3/projects/habitat-navigation-analysis/",
+            ),
+            map_location="cpu",
         )["state_dict"]
         stage_2_state = trained_ckpt["state_dict"]
 
@@ -621,7 +626,7 @@ def eval_checkpoint(args, current_ckpt):
         stats_episodes,
         trained_args,
         float(trained_ckpt["num_frames"]),
-        args
+        args,
     )
 
 
@@ -657,6 +662,8 @@ class ModelEvaluator:
         self.last_step = last_step
 
     def checkpoint(self, args):
+        import submitit
+
         return submitit.helpers.DelayedSubmission(
             ModelEvaluator(self.prev_ckpt_ind, self.last_step), args
         )
@@ -671,6 +678,8 @@ class ModelEvaluator:
         if args.video == 1:
             assert args.out_dir_video is not None, "Video dir not specified"
 
+        best_spl = -1
+        best_stats = None
         with SummaryWriter(
             log_dir=args.tensorboard_dir, purge_step=self.last_step
         ) as tb_writer:
@@ -684,6 +693,17 @@ class ModelEvaluator:
                     )
 
                     if current_ckpt == "done":
+                        spls = np.array(py_().values().map("spl")(best_stats)) * 100.0
+                        success = (
+                            np.array(py_().values().map("success")(best_stats)) * 100.0
+                        )
+
+                        print(np.mean(spls), 1.96 / np.sqrt(len(spls)) * np.std(spls))
+                        print(
+                            np.mean(success),
+                            1.96 / np.sqrt(len(success)) * np.std(success),
+                        )
+
                         return
 
                     time.sleep(2)  # sleep for 2 seconds before polling again
@@ -695,7 +715,7 @@ class ModelEvaluator:
                     stats_episodes,
                     trained_args,
                     num_frames,
-                    _
+                    _,
                 ) = eval_checkpoint(args, current_ckpt)
 
                 if trained_args.task.nav_task in {"loopnav", "teleportnav"}:
@@ -742,6 +762,21 @@ class ModelEvaluator:
                     total_success = (
                         py_().values().map("success").map(int).sum()(stats_episodes)
                     )
+
+                    if avg_spl > best_spl:
+                        best_spl = avg_spl
+                        best_stats = stats_episodes
+
+                        spls = np.array(py_().values().map("spl")(best_stats)) * 100.0
+                        success = (
+                            np.array(py_().values().map("success")(best_stats)) * 100.0
+                        )
+
+                        print(np.mean(spls), 1.96 / np.sqrt(len(spls)) * np.std(spls))
+                        print(
+                            np.mean(success),
+                            1.96 / np.sqrt(len(success)) * np.std(success),
+                        )
 
                     logger.info("Average episode SPL: {:.6f}".format(avg_spl))
 

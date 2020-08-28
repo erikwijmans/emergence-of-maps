@@ -12,6 +12,9 @@ import torch.distributed as distrib
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.data
+import lmdb
+import msgpack
+import msgpack_numpy
 import tqdm
 from apex import amp
 from scipy import ndimage
@@ -21,6 +24,24 @@ from nav_analysis.utils.ddp_utils import init_distrib_slurm
 
 torch.backends.cudnn.enabled = True
 torch.backends.cudnn.benchmark = True
+
+
+def to_grid(pt, num_bins=96):
+    bin_size = 0.25 * 96 / num_bins
+    num_bins = np.array([num_bins, num_bins])
+    bin_range = np.arange(num_bins[0] + 1)
+    bin_range = (bin_range - bin_range.max() / 2) * bin_size
+    bins = [bin_range.copy(), bin_range.copy()]
+
+    x, _, y = pt
+
+    x = int(np.searchsorted(bins[0], [x])[0])
+    y = int(np.searchsorted(bins[1], [y])[0])
+
+    if (0 <= x < num_bins[0]) and (0 <= y < num_bins[1]):
+        return x, y
+    else:
+        return None
 
 
 num_bins = None
@@ -706,10 +727,93 @@ def softmax_classifier(args):
                 pbar.refresh()
 
 
+@torch.no_grad()
+def eval_model(args):
+    device = torch.device("cuda", 0)
+    top_down_model = Model(512 * 6, [96, 96])
+    top_down_model.to(device)
+    top_down_model.load_state_dict(torch.load(args.eval_model, map_location=device,))
+    top_down_model.eval()
+    eval_results = dict(time_offset=[], prob=[])
+
+    with lmdb.open(
+        args.annotated_data, map_size=1 << 40, readonly=True
+    ) as lmdb_env, lmdb_env.begin(buffers=True, write=False) as txn:
+        for idx in tqdm.tqdm(range(lmdb_env.stat()["entries"])):
+            ele = msgpack_numpy.unpackb(txn.get(str(idx).encode()), raw=False)
+
+            hidden_state = (
+                ele["hidden_state"]
+                if "trained" in args.eval_model
+                else ele["random_hidden_state"]
+            )
+            positions = ele["positions"]
+            actions = ele["actions"]
+
+            stop_pos = -1
+            for i in range(len(positions)):
+                if actions[i] == 3:
+                    stop_pos = i
+                    break
+
+            assert stop_pos > 0
+            hidden_state = hidden_state[0:stop_pos]
+            positions = positions[0:stop_pos]
+            hidden_state = (
+                torch.from_numpy(np.array(hidden_state)).to(device).view(stop_pos, -1)
+            )
+            preds = []
+            for h in torch.split(hidden_state, 512, 0):
+                preds.append(top_down_model(h))
+
+            past_map = torch.cat([p[0] for p in preds], 0)
+            past_map = F.softmax(past_map, -1).cpu().numpy()
+
+            fut_map = torch.cat([p[1] for p in preds], 0)
+            fut_map = F.softmax(fut_map, -1).cpu().numpy()
+            for i in range(stop_pos):
+                grid_pos = to_grid(positions[i])
+                if grid_pos is None:
+                    continue
+
+                for offset in range(-256, 256 + 1):
+                    if offset == 0:
+                        continue
+
+                    j = -offset + i
+                    if 0 <= j < stop_pos:
+                        eval_results["time_offset"].append(offset)
+
+                        if offset < 0:
+                            eval_results["prob"].append(
+                                float(past_map[j, grid_pos[0], grid_pos[1], 1])
+                            )
+                        else:
+                            eval_results["prob"].append(
+                                float(fut_map[j, grid_pos[0], grid_pos[1], 1])
+                            )
+
+    with open(
+        osp.splitext(osp.basename(args.eval_model))[0] + "-eval-res.msg", "wb"
+    ) as f:
+        msgpack.pack(eval_results, f, use_bin_type=True)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--state-type", type=str, default="trained", choices={"trained", "random"}
     )
+    parser.add_argument("--eval-model", type=str, default=None)
+    parser.add_argument(
+        "--annotated-data",
+        type=str,
+        default="data/map_extraction/positions_maps/loopnav-final-mp3d-blind-with-random-states_val.lmdb",
+    )
 
-    softmax_classifier(parser.parse_args())
+    args = parser.parse_args()
+
+    if args.eval_model is None:
+        softmax_classifier(args)
+    else:
+        eval_model(args)
