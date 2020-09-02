@@ -297,6 +297,7 @@ class ListDataset(torch.utils.data.Dataset):
                 )
                 .astype(np.float32)
                 .flatten()
+                .copy()
             )
 
         return ele
@@ -470,30 +471,23 @@ def main():
                 )[0]
             ).to(device=device)
             model.eval()
+            model.hparams = argparse.Namespace(**model.hparams)
             model.hparams.val_dataset = args.val_dataset
             model.hparams.train_dataset = args.train_dataset
 
             with torch.no_grad():
                 val_outputs = []
-                for dl in model.val_dataloader():
-                    for batch in dl:
-                        batch["hidden_state"] = batch["hidden_state"].to(device=device)
-                        batch["position"] = batch["position"].to(device=device)
-                        val_outputs.append(model.validation_step(batch, None))
-
-                        val_outputs[-1]["steps_from_stop_tgt"] = batch[
-                            "steps_from_stop_tgt"
-                        ]
-                        val_outputs[-1]["steps_from_stop_curr"] = batch[
-                            "steps_from_stop_curr"
-                        ]
+                for batch in model.val_dataloader():
+                    batch["hidden_state"] = batch["hidden_state"].to(device=device)
+                    batch["position"] = batch["position"].to(device=device)
+                    val_outputs.append(model.validation_step(batch, None))
 
                 loss = torch.cat([o["val_loss"] for o in val_outputs], dim=0)
                 l2_error = torch.cat([o["val_l2_error"] for o in val_outputs], dim=0)
                 norm_l2_error = torch.cat(
                     [o["val_norm_l2_error"] for o in val_outputs], dim=0
                 )
-                norm_l2_error = norm_l2_error[norm_l2_error > 0.0]
+                norm_l2_error = norm_l2_error[norm_l2_error > 0.25]
 
                 eval_results["val_loss"].append(float(loss.mean()))
                 eval_results["val_l2_error"].append(float(l2_error.mean()))

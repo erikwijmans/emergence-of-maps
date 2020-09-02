@@ -182,6 +182,8 @@ def main():
         successes = []
         chamfers_agent_probe = []
         chamfers_probe_agent = []
+        excur_removal = []
+        free_space_inf = []
         for rn in all_logs[(task, state, input_type)]:
             rn_spls = [
                 s[1]
@@ -189,13 +191,14 @@ def main():
                     multiplexer, _make_key(rn, "spl"), "val", 100.0
                 )
             ]
+
             if len(rn_spls) < 10:
                 continue
 
             best_idx = np.argmax(rn_spls)
 
-            if input_type == "no-inputs" and state == "trained":
-                print(rn, best_idx)
+            #  if input_type == "no-inputs" and state == "trained":
+                #  print(rn, best_idx)
 
             spls.append(rn_spls[best_idx])
 
@@ -218,9 +221,15 @@ def main():
             if chamf1 is not None:
                 chamfers_agent_probe.append(chamf1)
                 chamfers_probe_agent.append(chamf2)
+                free_space_inf.append(chamf2)
+                excur_removal.append(chamf1 - chamf2)
+
+        #  if input_type == "no-inputs" and state == "trained":
+            #  print(task)
+            #  print(spls)
 
         print(input_type, state, task)
-        print(make_row(chamfers_agent_probe, chamfers_probe_agent, successes, spls))
+        print(make_row(excur_removal, free_space_inf, successes, spls))
 
 
 if __name__ == "__main__":

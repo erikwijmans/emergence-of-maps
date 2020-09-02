@@ -14,7 +14,7 @@ import habitat_sim
 import matplotlib
 
 matplotlib.rcParams["text.usetex"] = False
-matplotlib.rcParams["backend"] = "pgf"
+matplotlib.rcParams["backend"] = "Agg"
 
 import seaborn as sns
 import matplotlib.pyplot as plt
@@ -120,7 +120,8 @@ def accuracy_and_examples(state_type):
     model.eval()
 
     trained_ckpt = torch.load(
-        "data/best_occ_predictor-{}.pt".format(state_type), map_location=device
+        "data/checkpoints/best_occ_predictor-{}.pt".format(state_type),
+        map_location=device,
     )
     model.load_state_dict(trained_ckpt)
 
@@ -236,9 +237,10 @@ def make_examples(trained_accs, trained_preds, agent_routes, episodes, masks, er
         prev_pt = route[0]
         for i in range(1, len(route)):
             beta = 0.0 + 1.0 * (i / (len(route) - 1))
+            beta = 1.0
             color = tuple(
                 (
-                    np.array([41, 128, 185]) * beta
+                    np.array([52, 152, 219]) * beta
                     + (1 - beta) * np.array([22, 160, 133])
                 ).tolist()
             )
@@ -254,21 +256,24 @@ def make_examples(trained_accs, trained_preds, agent_routes, episodes, masks, er
 
             prev_pt = route[i]
 
+        x, y = to_grid([0, 0, 0], num_bins=_map.shape[0])
+        _map[x, y] = 0
+
         return _map
 
-    prng = np.random.RandomState(1)
+    prng = np.random.RandomState(0)
 
-    acc_ranges = [[0.35, 0.45], [0.55, 0.65], [0.8, 0.9], [0.95, 1.0]]
+    acc_ranges = [[0.0, 0.05], [0.115, 0.13], [0.31, 0.33], [0.55, 0.65]]
 
     num = 0
     for acc_rg in acc_ranges:
-        lb, ub = np.quantile(trained_accs, acc_rg)
+        lb, ub = acc_rg
         inds = [i for i in range(len(trained_accs)) if lb <= trained_accs[i] <= ub]
         ind = prng.choice(inds)
 
         print(trained_accs[ind])
 
-        color_map = [[236, 240, 241], [127, 140, 141], [255, 255, 255]]
+        color_map = [[236, 240, 241], [149, 165, 166], [255, 255, 255]]
 
         pred = trained_preds[ind].copy()
         gt = make_groundtruth(episodes[ind], pred.shape[0] * scaling_factor)
@@ -293,6 +298,18 @@ def make_examples(trained_accs, trained_preds, agent_routes, episodes, masks, er
 
         gt = draw_path(agent_routes[ind], gt)
         pred = draw_path(agent_routes[ind], pred)
+
+        mask = _scale_up_binary(mask, scaling_factor)
+
+        range_x = np.nonzero(np.any(mask, 1))[0]
+        range_y = np.nonzero(np.any(mask, 0))[0]
+
+        x_min, x_max = range_x[0], range_x[-1]
+        y_min, y_max = range_y[0], range_y[-1]
+
+        pred = pred[x_min:x_max, y_min:y_max]
+        gt = gt[x_min:x_max, y_min:y_max]
+        err = err[x_min:x_max, y_min:y_max]
 
         imageio.imwrite("occ_figure/pred{}.png".format(num), pred)
         imageio.imwrite("occ_figure/gt{}.png".format(num), gt)
@@ -326,8 +343,10 @@ def main():
 
     fig = plt.figure(figsize=(10, 5))
 
-    custom_kde_plot(random_accs, label="\\texttt{RandomEmbedding}", color="#c0392b")
-    custom_kde_plot(trained_accs, label="\\texttt{TrainedEmbedding}", color="#f39c12")
+    #  custom_kde_plot(random_accs, label="\\texttt{RandomEmbedding}", color="#c0392b")
+    #  custom_kde_plot(trained_accs, label="\\texttt{TrainedEmbedding}", color="#f39c12")
+    custom_kde_plot(random_accs, label="RandomEmbedding", color="#c0392b")
+    custom_kde_plot(trained_accs, label="TrainedEmbedding", color="#f39c12")
 
     ax = plt.gca()
     ax.legend(loc="best")
