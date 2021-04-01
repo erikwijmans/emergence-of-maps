@@ -366,7 +366,9 @@ class PointGoalSensor(habitat.Sensor):
 
             rho = np.linalg.norm(v)
             if rho > 1e-5:
-                direction_vector_agent = np.array([rho] + v.tolist(), dtype=np.float32)
+                direction_vector_agent = np.array(
+                    [rho] + (v / rho).tolist(), dtype=np.float32
+                )
             else:
                 direction_vector_agent = np.array([0, 1, 0], dtype=np.float32)
 

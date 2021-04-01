@@ -190,8 +190,8 @@ _C.SIMULATOR.RGB_SENSOR.TYPE = "HabitatSimRGBSensor"
 # -----------------------------------------------------------------------------
 _C.SIMULATOR.DEPTH_SENSOR = SENSOR.clone()
 _C.SIMULATOR.DEPTH_SENSOR.TYPE = "HabitatSimDepthSensor"
-_C.SIMULATOR.DEPTH_SENSOR.MIN_DEPTH = 0
-_C.SIMULATOR.DEPTH_SENSOR.MAX_DEPTH = 10
+_C.SIMULATOR.DEPTH_SENSOR.MIN_DEPTH = 0.0
+_C.SIMULATOR.DEPTH_SENSOR.MAX_DEPTH = 10.0
 _C.SIMULATOR.DEPTH_SENSOR.NORMALIZE_DEPTH = True
 # -----------------------------------------------------------------------------
 # SEMANTIC SENSOR

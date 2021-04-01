@@ -20,9 +20,15 @@ bins = [bin_range.copy(), bin_range.copy()]
 msgpack_numpy.patch()
 
 
+parser = argparse.ArgumentParser()
+parser.add_argument("--positions-output", type=str, required=True)
+
+args = parser.parse_args()
+
+
 def _build_dset(_env, T=5000):
     returns = dict(xs=[], rxs=[], maps=[], occupancy_grids=[], d_goal=[], d_start=[])
-    samples_per = 30
+    samples_per = 20
     _len = _env.stat()["entries"]
     episode_lens = []
 
@@ -110,7 +116,7 @@ def _build_dset(_env, T=5000):
 
 
 for split in ["train", "val"][::-1]:
-    fname = f"data/map_extraction/positions_maps/loopnav-final-mp3d-blind-with-random-states_{split}"
+    fname = f"{args.positions_output}_{split}"
     with lmdb.open(fname + ".lmdb") as _env:
         returns = _build_dset(_env)
 

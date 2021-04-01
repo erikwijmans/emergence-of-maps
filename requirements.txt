@@ -1,3 +1,4 @@
-tensorboardX
-filelock
 tinydb
+lmdb
+msgpack
+msgpack-numpy

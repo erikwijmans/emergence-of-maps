@@ -71,25 +71,25 @@ def main():
     if args.chance_run:
         log_dir = "data/visitation_predictor-chance"
     else:
-        log_dir = "data/visitation_predictor"
+        log_dir = "data/visitation_predictor-v2"
 
     log_dirs = glob.glob(osp.join(log_dir, "time_offset=*"))
     models = dict()
 
     for log_dir in tqdm.tqdm(log_dirs):
-        if len(glob.glob(osp.join(log_dir, "*.ckpt"))) == 0:
+        ckpts = list(
+            filter(
+                lambda ckpt: "hpc" not in ckpt,
+                glob.glob(osp.join(log_dir, "**/*.ckpt"), recursive=True),
+            )
+        )
+        if len(ckpts) == 0:
             continue
 
         time_offset = int(log_dir.split("=")[-1])
 
         model = VisitationPredictor.load_from_checkpoint(
-            list(
-                sorted(
-                    glob.glob(osp.join(log_dir, "*.ckpt")),
-                    key=osp.getmtime,
-                    reverse=True,
-                )
-            )[0]
+            list(sorted(ckpts, key=osp.getmtime, reverse=True,))[0]
         ).to(device=device)
         model.eval()
 

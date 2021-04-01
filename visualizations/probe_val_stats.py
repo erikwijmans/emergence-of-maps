@@ -198,7 +198,7 @@ def main():
             best_idx = np.argmax(rn_spls)
 
             #  if input_type == "no-inputs" and state == "trained":
-                #  print(rn, best_idx)
+            #  print(rn, best_idx)
 
             spls.append(rn_spls[best_idx])
 
@@ -225,8 +225,8 @@ def main():
                 excur_removal.append(chamf1 - chamf2)
 
         #  if input_type == "no-inputs" and state == "trained":
-            #  print(task)
-            #  print(spls)
+        #  print(task)
+        #  print(spls)
 
         print(input_type, state, task)
         print(make_row(excur_removal, free_space_inf, successes, spls))

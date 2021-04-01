@@ -1,0 +1,18 @@
+task:
+    task_config: tasks/loopnav/demo.loopnav.yaml
+
+logging:
+    log_file: log.txt
+    checkpoint_folder: data/checkpoints/demo
+    tensorboard_dir: runs/demo
+
+    checkpoint_interval: 2500
+    log_interval: 50
+
+ppo:
+    num_updates: 2500
+    num_processes: 16
+    num_steps: 128
+
+stage_2_args:
+    stage_1_model: data/checkpoints/demo/ckpt.0.pth

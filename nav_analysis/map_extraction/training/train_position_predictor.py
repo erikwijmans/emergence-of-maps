@@ -8,13 +8,14 @@ import torch.nn.functional as F
 import torch.utils.data
 import pytorch_lightning as pl
 import glob
-from pytorch_lightning.logging import TensorBoardLogger
+from pytorch_lightning.loggers import TensorBoardLogger
 import lmdb
 import msgpack_numpy
 import tqdm
 import numpy as np
 import argparse
 import shutil
+import copy
 
 torch.backends.cudnn.enabled = True
 torch.backends.cudnn.benchmark = True
@@ -185,6 +186,7 @@ class VisititationPredictionDataset(torch.utils.data.IterableDataset):
         self._current_idx = 0
         self._chance_run = chance_run
         self._truncate = truncate
+        self._buffer = []
 
         with lmdb.open(
             lmdb_filename, map_size=1 << 40, lock=False, readonly=True
@@ -204,11 +206,8 @@ class VisititationPredictionDataset(torch.utils.data.IterableDataset):
         )
         self._shuffle = shuffle
 
-    def __next__(self):
-        if len(self._preload) == 0:
-            if len(self._load_blocks) == 0:
-                raise StopIteration
-
+    def _pop_preload_next(self):
+        if len(self._preload) == 0 and len(self._load_blocks) > 0:
             with lmdb.open(
                 self.lmdb_filename, map_size=1 << 40, readonly=True, lock=False
             ) as lmdb_env, lmdb_env.begin(buffers=True) as txn:
@@ -228,14 +227,37 @@ class VisititationPredictionDataset(torch.utils.data.IterableDataset):
                         .flatten()
                     )
 
+                    for k, v in ele.items():
+                        ele[k] = copy.deepcopy(v)
+
                     self._preload.append(ele)
 
+            self._preload = self._preload[::-1]
+
+        if len(self._preload) == 0:
+            return None
+        else:
+            return self._preload.pop()
+
+    def __next__(self):
+        if len(self._buffer) == 0 and len(self._load_blocks) == 0:
+            raise StopIteration
+
+        while len(self._buffer) < 2.2 * self.preload_size:
+            ele = self._pop_preload_next()
+            if ele is None:
+                break
+
+            self._buffer.append(ele)
+
             if self._shuffle:
-                random.shuffle(self._preload)
+                idx = random.randrange(len(self._buffer))
+                self._buffer[idx], self._buffer[-1] = (
+                    self._buffer[-1],
+                    self._buffer[idx],
+                )
 
-            self._preload = list(reversed(self._preload))
-
-        return self._preload.pop()
+        return self._buffer.pop()
 
     def __iter__(self):
         worker_info = torch.utils.data.get_worker_info()
@@ -270,40 +292,85 @@ class VisititationPredictionDataset(torch.utils.data.IterableDataset):
 
 
 class ListDataset(torch.utils.data.Dataset):
-    def __init__(self, lmdb_filename, time_offset):
+    def __init__(self, lmdb_filename, time_offset, preload):
         super().__init__()
         self.lmdb_filename = lmdb_filename
         self._lmdb_env = None
+        self._preload = preload
 
         with lmdb.open(
-            lmdb_filename, map_size=1 << 40, lock=False, readonly=True
+            self.lmdb_filename, map_size=1 << 40, lock=False, readonly=True
         ) as lmdb_env, lmdb_env.begin(buffers=True) as txn:
             self.time_range_dset = msgpack_numpy.unpackb(
                 txn.get(f"time_offset/{time_offset}".encode()), raw=False
             )
+            if self._preload:
+                for idx in range(len(self)):
+                    self.time_range_dset[idx] = self._load_one(idx, txn)
+
+    def _load_one(self, idx, txn):
+        ele = self.time_range_dset[idx].copy()
+
+        ele["hidden_state"] = msgpack_numpy.unpackb(
+            txn.get("hidden_state/{}".format(ele["hidden_state_idx"]).encode()),
+            raw=False,
+        ).flatten()
+
+        for k, v in ele.items():
+            ele[k] = copy.deepcopy(v)
+
+        return ele
 
     def __getitem__(self, idx):
-        if self._lmdb_env is None:
-            self._lmdb_env = lmdb.open(
-                self.lmdb_filename, map_size=1 << 40, lock=False, readonly=True
-            )
-
-        ele = self.time_range_dset[idx].copy()
-        with self._lmdb_env.begin(buffers=True) as txn:
-            ele["hidden_state"] = (
-                msgpack_numpy.unpackb(
-                    txn.get("hidden_state/{}".format(ele["hidden_state_idx"]).encode()),
-                    raw=False,
+        if self._preload:
+            ele = self.time_range_dset[idx].copy()
+        else:
+            if self._lmdb_env is None:
+                self._lmdb_env = lmdb.open(
+                    self.lmdb_filename, map_size=1 << 40, lock=False, readonly=True
                 )
-                .astype(np.float32)
-                .flatten()
-                .copy()
-            )
 
+            with self._lmdb_env.begin(buffers=True) as txn:
+                ele = self._load_one(idx, txn)
+
+        ele["hidden_state"] = ele["hidden_state"].astype(np.float32)
         return ele
 
     def __len__(self):
         return len(self.time_range_dset)
+
+
+def __build_dataloader(hparams, split, preload=False):
+    if split == "train":
+        dset = VisititationPredictionDataset(
+            getattr(hparams, f"{split}_dataset"),
+            hparams.time_offset,
+            hparams.chance_run,
+            truncate=200,
+            shuffle=True,
+        )
+    if split == "val":
+        dset = ListDataset(
+            getattr(hparams, f"{split}_dataset"), hparams.time_offset, preload
+        )
+
+    dloader = torch.utils.data.DataLoader(
+        dset,
+        num_workers=4,
+        batch_size=hparams.batch_size,
+        drop_last=split == "train",
+        pin_memory=True,
+    )
+
+    return dloader
+
+
+def train_dataloader(hparams):
+    return __build_dataloader(hparams, "train")
+
+
+def val_dataloader(hparams, preload=True):
+    return __build_dataloader(hparams, "val", preload)
 
 
 class VisitationPredictor(pl.LightningModule):
@@ -344,12 +411,12 @@ class VisitationPredictor(pl.LightningModule):
         l2_error = torch.norm(preds.detach() - batch["position"], p=2, dim=-1)
 
         gt_norms = torch.norm(batch["position"], p=2, dim=-1)
-        norm_l2_error = torch.full_like(l2_error, -1e5)
+        norm_l2_error = torch.full_like(l2_error, 1e-5)
         norm_mask = gt_norms > 1e-1
         norm_l2_error[norm_mask] = l2_error[norm_mask] / gt_norms[norm_mask]
 
         return dict(
-            val_loss=loss, val_l2_error=l2_error, val_norm_l2_error=norm_l2_error
+            val_loss=loss, val_l2_error=l2_error, val_norm_l2_error=norm_l2_error,
         )
 
     def validation_end(self, outputs):
@@ -368,37 +435,6 @@ class VisitationPredictor(pl.LightningModule):
             weight_decay=self.hparams.weight_decay,
         )
 
-    def __build_dataloader(self, split):
-        if split == "train":
-            dset = VisititationPredictionDataset(
-                getattr(self.hparams, f"{split}_dataset"),
-                self.hparams.time_offset,
-                self.hparams.chance_run,
-                truncate=25,
-                shuffle=True,
-            )
-        if split == "val":
-            dset = ListDataset(
-                getattr(self.hparams, f"{split}_dataset"), self.hparams.time_offset
-            )
-
-        dloader = torch.utils.data.DataLoader(
-            dset,
-            num_workers=4,
-            batch_size=self.hparams.batch_size,
-            drop_last=split == "train",
-        )
-
-        return dloader
-
-    @pl.data_loader
-    def train_dataloader(self):
-        return self.__build_dataloader("train")
-
-    @pl.data_loader
-    def val_dataloader(self):
-        return self.__build_dataloader("val")
-
 
 def main():
     args = build_parser().parse_args()
@@ -407,40 +443,39 @@ def main():
     args.val_dataset = build_visitation_dataset_cache(args.val_dataset, 256)
     args.train_dataset = build_visitation_dataset_cache(args.train_dataset, 256)
 
-    args.val_dataset = copy_to_scratch_jail(args.val_dataset)
-    args.train_dataset = copy_to_scratch_jail(args.train_dataset)
+    if args.chance_run:
+        args.val_dataset = copy_to_scratch_jail(args.val_dataset)
+        args.train_dataset = copy_to_scratch_jail(args.train_dataset)
 
     if args.chance_run:
         log_dir = "data/visitation_predictor-chance/time_offset={}".format(
             args.time_offset
         )
     else:
-        log_dir = "data/visitation_predictor/time_offset={}".format(args.time_offset)
+        log_dir = "data/visitation_predictor-v2/time_offset={}".format(args.time_offset)
+
     if args.mode == "train":
         model = VisitationPredictor(args)
-        logger = TensorBoardLogger(log_dir, name="", version=0,)
+        logger = TensorBoardLogger(log_dir, name="", version=0)
+
         checkpoint_callback = pl.callbacks.ModelCheckpoint(
-            filepath=log_dir,
-            save_top_k=1,
-            verbose=True,
-            monitor="val_loss",
-            mode="min",
-            prefix="",
+            save_top_k=1, verbose=True, monitor="val_l2_error", mode="min", prefix="",
         )
+
         early_stopping_cb = pl.callbacks.EarlyStopping(
-            mode="min", patience=3, verbose=True
+            monitor="val_l2_error", mode="min", patience=5, verbose=True
         )
 
         trainer = pl.Trainer(
-            max_epochs=300,
+            max_epochs=50,
             logger=logger,
             checkpoint_callback=checkpoint_callback,
             early_stop_callback=early_stopping_cb,
-            val_check_interval=500,
+            default_root_dir=log_dir,
             gpus=[0],
         )
 
-        trainer.fit(model)
+        trainer.fit(model, train_dataloader(args), val_dataloader(args))
     else:
         device = torch.device("cuda", 0)
         log_dirs = glob.glob(osp.join(osp.dirname(log_dir), "time_offset=*"))
@@ -456,19 +491,19 @@ def main():
         )
 
         for log_dir in tqdm.tqdm(log_dirs):
-            if len(glob.glob(osp.join(log_dir, "*.ckpt"))) == 0:
+            ckpts = list(
+                filter(
+                    lambda ckpt: "hpc" not in ckpt,
+                    glob.glob(osp.join(log_dir, "**/*.ckpt"), recursive=True),
+                )
+            )
+            if len(ckpts) == 0:
                 continue
 
             time_offset = int(log_dir.split("=")[-1])
 
             model = VisitationPredictor.load_from_checkpoint(
-                list(
-                    sorted(
-                        glob.glob(osp.join(log_dir, "*.ckpt")),
-                        key=osp.getmtime,
-                        reverse=True,
-                    )
-                )[0]
+                list(sorted(ckpts, key=osp.getmtime, reverse=True))[0]
             ).to(device=device)
             model.eval()
             model.hparams = argparse.Namespace(**model.hparams)
@@ -477,7 +512,7 @@ def main():
 
             with torch.no_grad():
                 val_outputs = []
-                for batch in model.val_dataloader():
+                for batch in val_dataloader(model.hparams, preload=False):
                     batch["hidden_state"] = batch["hidden_state"].to(device=device)
                     batch["position"] = batch["position"].to(device=device)
                     val_outputs.append(model.validation_step(batch, None))

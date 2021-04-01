@@ -318,7 +318,7 @@ def batch_obs(observations, device=None):
 
     for obs in observations:
         for sensor in obs:
-            batch[sensor].append(_to_tensor(obs[sensor]))
+            batch[sensor].append(_to_tensor(obs[sensor]).to(device=device))
 
     for sensor in batch:
         batch[sensor] = torch.stack(batch[sensor], dim=0).to(

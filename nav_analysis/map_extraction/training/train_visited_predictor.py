@@ -16,7 +16,6 @@ import lmdb
 import msgpack
 import msgpack_numpy
 import tqdm
-from apex import amp
 from scipy import ndimage
 from torch.utils import tensorboard
 
@@ -59,12 +58,11 @@ def create_occupancy_grid_mask(visited_map, rank=2, napply=1):
 class VisitedDataset(torch.utils.data.Dataset):
     bins = None
 
-    def __init__(self, split, state_type="trained"):
+    def __init__(self, split, dset_path, state_type="trained"):
         super().__init__()
         global num_bins
         self.split = split
-        self.fname = f"data/map_extraction/positions_maps/loopnav-final-mp3d-blind-with-random-states_{split}_dset.h5"
-
+        self.fname = f"{dset_path}_{split}_dset.h5"
         self._f = h5.File(self.fname, "r")
         self._len = self._f.attrs["len"]
         self._samples_per = self._f.attrs["samples_per"]
@@ -90,8 +88,12 @@ class VisitedDataset(torch.utils.data.Dataset):
 
         mask = torch.from_numpy(create_occupancy_grid_mask(_map, napply=4)) == 1.0
 
-        d_goal = self._f["d_goal"][idx // self._samples_per][idx % self._samples_per]
-        d_start = self._f["d_start"][idx // self._samples_per][idx % self._samples_per]
+        d_goal = float(
+            self._f["d_goal"][idx // self._samples_per][idx % self._samples_per]
+        )
+        d_start = float(
+            self._f["d_start"][idx // self._samples_per][idx % self._samples_per]
+        )
 
         #  d_goal = np.array([0.0], dtype=np.float32)[0]
         #  d_start = d_goal
@@ -415,8 +417,10 @@ class EpochMetrics:
 
         self.unbalanced_acc = 0.0
         self.occupancy_count = torch.tensor(0.0, device=device)
+        self.examples_count = torch.tensor(0.0, device=device)
 
         self.total_occupancy_loss = 0.0
+        self.total_occupancy_iou = 0.0
 
     @torch.no_grad()
     def update(
@@ -443,6 +447,18 @@ class EpochMetrics:
             .sum()
         )
 
+        def _masked_iou(_m, g, msk):
+            return (
+                torch.masked_select(((_m == 1) & (g == 1)), msk).float().sum()
+                / torch.masked_select(((_m == 1) | (g == 1)), msk).float().sum()
+            )
+
+        _map = torch.argmax(occupancy_logits, -1)
+        N = _map.size(0)
+        for i in range(N):
+            self.total_occupancy_iou += _masked_iou(_map[i], grid[i], mask[i])
+        self.examples_count += N
+
         self.total_occupancy_acc.append(mapping_acc(occupancy_logits, grid, mask))
 
     def finalize(self):
@@ -457,6 +473,8 @@ class EpochMetrics:
             distrib.all_reduce(self.total_unbal_occupancy_acc)
             distrib.all_reduce(self.total_occupancy_loss)
             distrib.all_reduce(self.occupancy_count)
+            distrib.all_reduce(self.total_occupancy_iou)
+            distrib.all_reduce(self.examples_count)
 
         self.total_occupancy_acc = (
             self.total_occupancy_acc[0] / self.total_occupancy_acc[1]
@@ -464,6 +482,7 @@ class EpochMetrics:
         ) / 2.0
         self.total_unbal_occupancy_acc /= self.occupancy_count
         self.total_occupancy_loss /= self.occupancy_count
+        self.total_occupancy_iou /= self.examples_count
 
 
 def train_epoch(models, optims, lr_scheds, loader, writer, step):
@@ -475,10 +494,10 @@ def train_epoch(models, optims, lr_scheds, loader, writer, step):
 
     world_rank = distrib.get_rank()
     with tqdm.tqdm(
-        total=len(loader)
+        total=len(loader), leave=False
     ) if world_rank == 0 else contextlib.suppress() as pbar:
         for batch in loader:
-            batch = tuple(v.to(device) for v in batch)
+            batch = tuple(v.to(device=device) for v in batch)
             x, y_past, y_future, grid, mask, gt_d_start, gt_d_goal = batch
 
             past_logits, future_logits = models[0](x)
@@ -488,8 +507,8 @@ def train_epoch(models, optims, lr_scheds, loader, writer, step):
             future_visted_loss = focal_loss(future_logits, y_future)
             past_visited_loss = focal_loss(past_logits, y_past)
             occupancy_loss = focal_loss(occupancy_logits, grid, mask)
-            start_loss = F.smooth_l1_loss(d_start, gt_d_start)
-            goal_loss = F.smooth_l1_loss(d_goal, gt_d_goal)
+            start_loss = F.smooth_l1_loss(d_start, gt_d_start.float())
+            goal_loss = F.smooth_l1_loss(d_goal, gt_d_goal.float())
 
             losses = [
                 past_visited_loss.mean() + future_visted_loss.mean(),
@@ -498,8 +517,7 @@ def train_epoch(models, optims, lr_scheds, loader, writer, step):
             ]
             for lidx, loss, optim in zip(range(len(losses)), losses, optims):
                 optim.zero_grad()
-                with amp.scale_loss(loss, optim, lidx) as scaled_loss:
-                    scaled_loss.backward()
+                loss.backward()
 
                 optim.step()
 
@@ -555,6 +573,9 @@ def train_epoch(models, optims, lr_scheds, loader, writer, step):
         )
         writer.add_scalars(
             "occupancy_bal_acc", {"train": metrics.total_occupancy_acc * 1e2}, step
+        )
+        writer.add_scalars(
+            "occupancy_iou", {"train": metrics.total_occupancy_iou * 1e2}, step
         )
 
     return step
@@ -620,8 +641,18 @@ def eval_epoch(model, loader, writer, step, model_name):
         writer.add_scalars(
             "occupancy_bal_acc", {"val": metrics.total_occupancy_acc * 1e2}, step
         )
+        writer.add_scalars(
+            "occupancy_iou", {"val": metrics.total_occupancy_iou * 1e2}, step
+        )
+
+        tqdm.tqdm.write(
+            "Occupancy Val IoU: {:.2f}".format(metrics.total_occupancy_iou * 1e2)
+        )
     else:
         return
+
+    state = {k.replace("module.", ""): v for k, v in model.state_dict().items()}
+    torch.save(state, model_name + "_latest.pt")
 
     total_acc = metrics.total_occupancy_acc.item()
     if total_acc < best_eval_acc:
@@ -629,9 +660,7 @@ def eval_epoch(model, loader, writer, step, model_name):
 
     best_eval_acc = total_acc
 
-    torch.save(
-        {k.replace("module.", ""): v for k, v in model.state_dict().items()}, model_name
-    )
+    torch.save(state, model_name + "_best.pt")
 
 
 def softmax_classifier(args):
@@ -641,8 +670,8 @@ def softmax_classifier(args):
 
     batch_size = 128
 
-    train_dset = VisitedDataset("train", state_type=args.state_type)
-    val_dset = VisitedDataset("val", state_type=args.state_type)
+    train_dset = VisitedDataset("train", args.dset_path, state_type=args.state_type)
+    val_dset = VisitedDataset("val", args.dset_path, state_type=args.state_type)
 
     train_loader = torch.utils.data.DataLoader(
         train_dset,
@@ -662,7 +691,7 @@ def softmax_classifier(args):
 
     world_size = distrib.get_world_size()
     base_lr = 1e-3
-    num_epochs = 300
+    num_epochs = args.epochs
 
     train_len = len(train_loader)
 
@@ -673,7 +702,7 @@ def softmax_classifier(args):
         else:
             return world_size * batch_size / 64
 
-    input_size = 512 * 6
+    input_size = 512 * args.num_rnn_layers * 2
     model = Model(input_size, num_bins)
     model = model.to(device)
 
@@ -682,16 +711,13 @@ def softmax_classifier(args):
         torch.optim.AdamW(m.parameters(), lr=base_lr, weight_decay=1e-5) for m in models
     ]
 
-    models, optims = amp.initialize(
-        models, optims, opt_level="O1", num_losses=len(models), enabled=False
-    )
-
-    models = [
-        torch.nn.parallel.DistributedDataParallel(
-            m, device_ids=[device], find_unused_parameters=True
-        )
-        for m in models
-    ]
+    if distrib.get_world_size() > 1:
+        models = [
+            torch.nn.parallel.DistributedDataParallel(
+                m, device_ids=[device], find_unused_parameters=True
+            )
+            for m in models
+        ]
 
     lr_scheds = [
         torch.optim.lr_scheduler.LambdaLR(optim, warmup_lr) for optim in optims
@@ -699,13 +725,11 @@ def softmax_classifier(args):
 
     step = 0
     with tensorboard.SummaryWriter(
-        log_dir="map_extraction_runs/future_visited_predictor-{}".format(
-            args.state_type
-        ),
+        log_dir="map_extraction_runs/map-extractor-{}".format(args.state_type),
         purge_step=step,
         flush_secs=30,
     ) if distrib.get_rank() == 0 else contextlib.suppress() as writer, tqdm.tqdm(
-        total=300
+        total=num_epochs
     ) if distrib.get_rank() == 0 else contextlib.suppress() as pbar:
         #  eval_epoch(model, val_loader, writer, step)
         for i in range(num_epochs):
@@ -719,7 +743,7 @@ def softmax_classifier(args):
                 val_loader,
                 writer,
                 step,
-                model_name="data/best_occ_predictor-{}.pt".format(args.state_type),
+                model_name="{}-{}".format(args.model_save_name, args.state_type),
             )
 
             if distrib.get_rank() == 0:
@@ -810,6 +834,16 @@ if __name__ == "__main__":
         type=str,
         default="data/map_extraction/positions_maps/loopnav-final-mp3d-blind-with-random-states_val.lmdb",
     )
+    parser.add_argument(
+        "--dset-path",
+        type=str,
+        default="data/map_extraction/positions_maps/depth-model",
+    )
+    parser.add_argument(
+        "--model-save-name", type=str, default="data/vision_occ_predictor"
+    )
+    parser.add_argument("--num-rnn-layers", type=int, default=3)
+    parser.add_argument("--epochs", type=int, default=300)
 
     args = parser.parse_args()
 

@@ -109,6 +109,12 @@ def custom_kde_plot(data, label, color):
     ax.set_ylim(0, auto=None)
 
     ax.axvline(np.mean(data), color=color, linestyle="--")
+    #  plt.text(
+    #  np.mean(data) - 0.025,
+    #  1.0,
+    #  "{:.1f}%".format(np.round(np.mean(data) * 100, 1)),
+    #  transform=ax.get_xaxis_transform(),
+    #  )
 
 
 @torch.no_grad()
@@ -121,12 +127,14 @@ def accuracy_and_examples(state_type):
 
     trained_ckpt = torch.load(
         "data/checkpoints/best_occ_predictor-{}.pt".format(state_type),
+        #  "data/best_vision_occ_predictor-{}.pt".format(state_type),
         map_location=device,
     )
     model.load_state_dict(trained_ckpt)
 
     env = lmdb.open(
         "data/map_extraction/positions_maps/loopnav-final-mp3d-blind-with-random-states_val.lmdb",
+        #  "data/map_extraction/positions_maps/depth-model_val.lmdb",
         map_size=1 << 40,
     )
     length = env.stat()["entries"]
@@ -147,7 +155,9 @@ def accuracy_and_examples(state_type):
             positions = value["positions"]
 
             stop_idxs = [i for i in range(len(actions)) if actions[i] == 3]
-            assert len(stop_idxs) == 1
+            assert len(stop_idxs) in (0, 1)
+            if len(stop_idxs) == 0:
+                stop_idxs = [len(actions)]
 
             mask = np.zeros((96, 96), dtype=np.int64)
             agent_route = []
@@ -167,7 +177,7 @@ def accuracy_and_examples(state_type):
 
             _top_down_occ = value["top_down_occupancy_grid"]
             _top_down_occ = (
-                torch.from_numpy(_top_down_occ)
+                torch.from_numpy(_top_down_occ.copy())
                 .float()
                 .view(1, 1, *_top_down_occ.shape)
                 .to(device=device)
@@ -199,6 +209,19 @@ def accuracy_and_examples(state_type):
                 / torch.masked_select(((_map == 1) | (grid == 1)), mask).float().sum()
             )
             acc = float(iou)
+            bal_acc = (
+                float(
+                    torch.masked_select((_map == grid) & (grid == 1), mask)
+                    .float()
+                    .sum()
+                    / torch.masked_select(grid == 1, mask).float().sum()
+                    + torch.masked_select((_map == grid) & (grid == 0), mask)
+                    .float()
+                    .sum()
+                    / torch.masked_select(grid == 0, mask).float().sum()
+                )
+                / 2.0
+            )
 
             errors = torch.full_like(_map, 2)
             errors.masked_fill_((_map != grid) & (grid == 0), 0)
@@ -212,6 +235,7 @@ def accuracy_and_examples(state_type):
                     value["episode"],
                     mask.cpu().numpy(),
                     errors.cpu().numpy(),
+                    bal_acc,
                 ]
             )
 
@@ -222,10 +246,13 @@ def accuracy_and_examples(state_type):
         [v[3] for v in top_down_preds_and_accs],
         [v[4] for v in top_down_preds_and_accs],
         [v[5] for v in top_down_preds_and_accs],
+        [v[6] for v in top_down_preds_and_accs],
     )
 
 
-def make_examples(trained_accs, trained_preds, agent_routes, episodes, masks, errors):
+def make_examples(
+    trained_accs, trained_bal_accs, trained_preds, agent_routes, episodes, masks, errors
+):
     scaling_factor = 6
 
     def draw_path(route, _map):
@@ -263,7 +290,7 @@ def make_examples(trained_accs, trained_preds, agent_routes, episodes, masks, er
 
     prng = np.random.RandomState(0)
 
-    acc_ranges = [[0.0, 0.05], [0.115, 0.13], [0.31, 0.33], [0.55, 0.65]]
+    acc_ranges = [[0.0, 0.1], [0.115, 0.13], [0.31, 0.33], [0.55, 0.65]]
 
     num = 0
     for acc_rg in acc_ranges:
@@ -316,6 +343,66 @@ def make_examples(trained_accs, trained_preds, agent_routes, episodes, masks, er
         imageio.imwrite("occ_figure/err{}.png".format(num), err)
         num += 1
 
+    trained_accs = np.array(trained_accs)
+    trained_bal_accs = np.array(trained_bal_accs)
+
+    deltas = np.sort(trained_bal_accs - trained_accs)
+    cut_off = np.sort(deltas)[int(0.9 * len(deltas))]
+    print("Acc delta cuttoff", cut_off)
+    taken_inds = set()
+    for num in range(5):
+        while True:
+            ind = int(prng.choice(len(deltas)))
+
+            if ind in taken_inds:
+                continue
+
+            if deltas[ind] >= cut_off and trained_bal_accs[ind] > 0.67:
+                break
+
+        taken_inds.add(ind)
+
+        print(deltas[ind], trained_bal_accs[ind])
+
+        color_map = [[236, 240, 241], [149, 165, 166], [255, 255, 255]]
+
+        pred = trained_preds[ind].copy()
+        mask = masks[ind].copy()
+        gt = make_groundtruth(episodes[ind], pred.shape[0] * scaling_factor)
+
+        pred[mask == 0] = 2
+        gt[_scale_up_binary(mask, scaling_factor) == 0] = 2
+
+        pred = scale_up_color(colorize_map(pred, color_map), scaling_factor)
+        gt = colorize_map(gt, color_map)
+
+        err = errors[ind]
+        err[mask == 0] = 3
+        color_map = [
+            [231, 76, 60],
+            np.array([192, 57, 43]) * 0.85,
+            [39, 174, 96],
+            [255, 255, 255],
+        ]
+        err = scale_up_color(colorize_map(err, color_map), scaling_factor)
+
+        pred = draw_path(agent_routes[ind], pred)
+        gt = draw_path(agent_routes[ind], gt)
+
+        mask = _scale_up_binary(mask, scaling_factor)
+
+        range_x = np.nonzero(np.any(mask, 1))[0]
+        range_y = np.nonzero(np.any(mask, 0))[0]
+
+        x_min, x_max = range_x[0], range_x[-1]
+        y_min, y_max = range_y[0], range_y[-1]
+
+        pred = pred[x_min:x_max, y_min:y_max]
+        gt = gt[x_min:x_max, y_min:y_max]
+
+        imageio.imwrite("occ_figure/big-diff-{}.png".format(num), pred)
+        imageio.imwrite("occ_figure/big-diff-gt-{}.png".format(num), gt)
+
 
 def main():
     (
@@ -325,28 +412,39 @@ def main():
         episodes,
         masks,
         errors,
+        trained_bal_accs,
     ) = accuracy_and_examples("trained")
 
-    print(np.mean(trained_accs))
+    print("Trained IOU", np.mean(trained_accs))
+    print("Trained Bal Accs", np.mean(trained_bal_accs))
 
-    random_accs, *_ = accuracy_and_examples("random")
-    print(np.mean(random_accs))
+    random_accs, *_, random_bal_acs = accuracy_and_examples("random")
+    print("Random IOU", np.mean(random_accs))
+    print("Random Bal Accs", np.mean(random_bal_acs))
 
     print(ks_2samp(trained_accs, random_accs))
     res = wilcoxon(trained_accs, random_accs)
     print(res)
     print(res.pvalue)
 
-    make_examples(trained_accs, trained_preds, agent_routes, episodes, masks, errors)
-
     os.makedirs("occ_figure", exist_ok=True)
+
+    make_examples(
+        trained_accs,
+        trained_bal_accs,
+        trained_preds,
+        agent_routes,
+        episodes,
+        masks,
+        errors,
+    )
 
     fig = plt.figure(figsize=(10, 5))
 
     #  custom_kde_plot(random_accs, label="\\texttt{RandomEmbedding}", color="#c0392b")
     #  custom_kde_plot(trained_accs, label="\\texttt{TrainedEmbedding}", color="#f39c12")
-    custom_kde_plot(random_accs, label="RandomEmbedding", color="#c0392b")
-    custom_kde_plot(trained_accs, label="TrainedEmbedding", color="#f39c12")
+    custom_kde_plot(random_accs, label="UntrainedAgentMemory", color="#c0392b")
+    custom_kde_plot(trained_accs, label="TrainedAgentMemory", color="#f39c12")
 
     ax = plt.gca()
     ax.legend(loc="best")
@@ -357,6 +455,22 @@ def main():
     sns.despine(fig=fig)
 
     plt.savefig("occ_figure/top_down_acc_plot.pdf", format="pdf", bbox_inches="tight")
+
+    fig = plt.figure(figsize=(10, 5))
+    custom_kde_plot(random_bal_acs, label="UntrainedAgentMemory", color="#c0392b")
+    custom_kde_plot(trained_bal_accs, label="TrainedAgentMemory", color="#f39c12")
+
+    ax = plt.gca()
+    ax.legend(loc="best")
+    plt.xlabel("Map Prediction Accuracy (Class Balanced Accuracy)")
+
+    ax.get_yaxis().set_visible(False)
+
+    sns.despine(fig=fig)
+
+    plt.savefig(
+        "occ_figure/top_down_acc_plot_bal_acc.pdf", format="pdf", bbox_inches="tight",
+    )
 
 
 if __name__ == "__main__":
