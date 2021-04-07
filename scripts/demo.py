@@ -350,26 +350,11 @@ def eval_checkpoint(args, current_ckpt):
 
                     stats_means[k].add(v)
 
-                if isinstance(infos[i][key_spl], dict):
-                    video_name = "{}_{}_dist={:.2f}_spl1={:.2f}_spl2={:.2f}_dd1={:.2f}_dd2={:.2f}_nact={}".format(
-                        current_episodes[i].episode_id,
-                        osp.splitext(osp.basename(current_episodes[i].scene_id))[0],
-                        current_episodes[i].info["geodesic_distance"],
-                        infos[i][key_spl]["stage_1_spl"],
-                        infos[i][key_spl]["stage_2_spl"],
-                        infos[i]["loop_d_delta"]["stage_1"],
-                        infos[i]["loop_d_delta"]["stage_2"],
-                        len(rgb_frames[i]) + 1,
-                    )
-                else:
-                    video_name = "{}_{}_{}_{:.2f}".format(
-                        current_episodes[i].episode_id,
-                        "apt",
-                        key_spl,
-                        infos[i][key_spl],
-                    )
+                video_name = "example_video"
 
-                images_to_video(rgb_frames[i], args.out_dir_video, video_name)
+                video_name = images_to_video(
+                    rgb_frames[i], args.out_dir_video, video_name
+                )
                 rgb_frames[i] = []
 
             else:
@@ -447,11 +432,26 @@ def eval_checkpoint(args, current_ckpt):
     gt_map = draw_path(probe_positions, gt_map, colors=[[155, 89, 182], [155, 89, 182]])
     pred = draw_path(probe_positions, pred, colors=[[155, 89, 182], [155, 89, 182]])
 
-    imageio.imwrite("results/predicted_map.png", pred)
-    imageio.imwrite("results/gt_map.png", gt_map)
+    imageio.imwrite(osp.join(args.out_dir_video, "predicted_map.png"), pred)
+    imageio.imwrite(osp.join(args.out_dir_video, "gt_map.png"), gt_map)
+
+    print()
+    print("Agent SPL:", np.round(stats_means["stage_1_spl"].mean * 100, 2))
+    print("Probe SPL:", np.round(stats_means["stage_2_spl"].mean * 100, 2))
+
+    print()
+    print("See " + video_name + " for a video of the agent/probe navigation")
+
+    print()
+    print(
+        "See results results/predicted_map.png for the predicted occupancy grid from the agent's hidden state.  "
+        "The blue line is the agent's path while the purple line is the probe's path.  Notice how well the probe follows the agent's map of the environment."
+    )
 
 
 if __name__ == "__main__":
+    os.environ["MAGNUM_LOG"] = "quiet"
+    os.environ["GLOG_minloglevel"] = "2"
     args = DotDict()
     args.pth_gpu_id = 0
     args.out_dir_video = "results"

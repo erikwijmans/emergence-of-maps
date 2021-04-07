@@ -115,6 +115,8 @@ def images_to_video(images, output_dir, video_name):
     writer.close()
     logger.info("Generated video: {}".format(os.path.join(output_dir, video_name)))
 
+    return video_name
+
 
 def poll_checkpoint_folder(checkpoint_folder, previous_ckpt_ind, exit_immediately):
     if not os.path.isdir(checkpoint_folder):
