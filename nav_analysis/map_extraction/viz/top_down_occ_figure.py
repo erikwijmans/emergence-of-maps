@@ -250,43 +250,41 @@ def accuracy_and_examples(state_type):
     )
 
 
+def draw_path(route, _map, colors=[[52, 152, 219], [22, 160, 133]]):
+    _map = _map.copy()
+
+    def _convert_pt(pt):
+        return tuple(reversed(to_grid(pt, num_bins=_map.shape[0])))
+
+    prev_pt = route[0]
+    for i in range(1, len(route)):
+        beta = 0.0 + 1.0 * (i / (len(route) - 1))
+        beta = 1.0
+        color = tuple(
+            (np.array(colors[0]) * beta + (1 - beta) * np.array(colors[1])).tolist()
+        )
+
+        cv2.line(
+            _map,
+            _convert_pt(prev_pt),
+            _convert_pt(route[i]),
+            color,
+            5,
+            lineType=cv2.LINE_8,
+        )
+
+        prev_pt = route[i]
+
+    x, y = to_grid([0, 0, 0], num_bins=_map.shape[0])
+    _map[x, y] = 0
+
+    return _map
+
+
 def make_examples(
     trained_accs, trained_bal_accs, trained_preds, agent_routes, episodes, masks, errors
 ):
     scaling_factor = 6
-
-    def draw_path(route, _map):
-        _map = _map.copy()
-
-        def _convert_pt(pt):
-            return tuple(reversed(to_grid(pt, num_bins=_map.shape[0])))
-
-        prev_pt = route[0]
-        for i in range(1, len(route)):
-            beta = 0.0 + 1.0 * (i / (len(route) - 1))
-            beta = 1.0
-            color = tuple(
-                (
-                    np.array([52, 152, 219]) * beta
-                    + (1 - beta) * np.array([22, 160, 133])
-                ).tolist()
-            )
-
-            cv2.line(
-                _map,
-                _convert_pt(prev_pt),
-                _convert_pt(route[i]),
-                color,
-                5,
-                lineType=cv2.LINE_8,
-            )
-
-            prev_pt = route[i]
-
-        x, y = to_grid([0, 0, 0], num_bins=_map.shape[0])
-        _map[x, y] = 0
-
-        return _map
 
     prng = np.random.RandomState(0)
 
