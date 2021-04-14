@@ -13,7 +13,6 @@ import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from apex import amp
 
 from nav_analysis.rl.ppo.lamb import Lamb
 from nav_analysis.rl.running_mean_and_var import RunningMeanAndVar

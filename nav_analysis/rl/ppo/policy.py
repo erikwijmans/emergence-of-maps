@@ -401,7 +401,6 @@ class Net(nn.Module):
                 hidden_states = tuple(v * masks for v in hidden_states)
             else:
                 hidden_states = masks * hidden_states
-
         else:
             initial_hidden_state = initial_hidden_state.permute(1, 0, 2)
             initial_hidden_state = self._unpack_hidden(initial_hidden_state)
@@ -543,16 +542,19 @@ class Net(nn.Module):
             prev_actions, 4 if "initial_hidden_state" in observations else 0
         )
         prev_actions_emb = self.prev_action_embedding(
-            torch.where(masks == 1, prev_actions + 1, start_tok).squeeze(-1)
+            torch.where(masks == 1.0, prev_actions + 1, start_tok).squeeze(-1)
         )
 
         x = []
         cnn_feats = None
         if len(cnn_input) > 0:
             cnn_input = torch.cat(cnn_input, dim=1)
-            cnn_input = F.interpolate(
-                cnn_input, size=(self._sq_size, self._sq_size), mode="area"
-            )
+            if cnn_input.size(2) != self._sq_size or cnn_input.size(3) != self._sq_size:
+                cnn_input = F.interpolate(
+                    cnn_input, size=(self._sq_size, self._sq_size), mode="area"
+                )
+                assert False
+
             cnn_input = F.avg_pool2d(cnn_input, 2)
             if self._norm_inputs:
                 cnn_input = self.running_mean_and_var(cnn_input)

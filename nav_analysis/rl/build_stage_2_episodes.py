@@ -5,8 +5,6 @@ import os
 import os.path as osp
 import random
 
-import fairtask
-import fairtask_slurm
 import habitat_sim
 import lmdb
 import msgpack
@@ -26,33 +24,6 @@ from nav_analysis.train_ppo import construct_envs
 msgpack_numpy.patch()
 
 CFG_DIR = osp.join(osp.dirname(nav_analysis.__file__), "configs")
-
-
-fairtask.queue.TASK_MAX_RETRIES = 30
-
-slurm_q = fairtask_slurm.SLURMQueueConfig(
-    name="dump-rollouts",
-    num_workers_per_node=4,
-    cpus_per_worker=10,
-    mem_gb_per_worker=100,
-    num_jobs=64,
-    partition="learnfair",
-    maxtime_mins=int(24 * 60),
-    gres="gpu:1",
-    log_directory="/checkpoint/{user}/fairtask",
-    output="slurm-%j.out",
-    error="slurm-%j.err",
-)
-
-qs = fairtask.TaskQueues(
-    {"local": fairtask.LocalQueueConfig(num_workers=1), "slurm": slurm_q},
-    no_workers=False,
-)
-
-
-@atexit.register
-def close_queues():
-    qs.close()
 
 
 class DotDict(dict):
@@ -93,7 +64,6 @@ def build_parser():
     return parser
 
 
-@qs.task("slurm")
 def collect_traj_for_scene(args, trained_args, random_weights_state, scene):
     device = torch.device("cuda", random.randint(0, torch.cuda.device_count() - 1))
     trained_ckpt = torch.load(args.model_path, map_location="cpu")
@@ -275,7 +245,7 @@ def collect_traj_for_scene(args, trained_args, random_weights_state, scene):
                 idx += 1
 
 
-async def main():
+def main():
     args = build_parser().parse_args()
     args.model_paths = glob.glob(args.model_paths_glob)
 
@@ -338,18 +308,8 @@ async def main():
             )
 
             if not osp.exists(output_path):
-                tasks.append(
-                    collect_traj_for_scene(
-                        job_args, trained_args, random_weights_state, s
-                    )
-                )
-
-    with tqdm.tqdm(total=len(tasks)) as pbar:
-        for task in asyncio.as_completed(tasks):
-            _ = await task
-            pbar.update()
+                collect_traj_for_scene(job_args, trained_args, random_weights_state, s)
 
 
 if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(main())
+    main()

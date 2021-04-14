@@ -6,7 +6,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
 import torchvision.transforms as T
-from apex import amp
 
 import nav_analysis.rl.resnet
 from nav_analysis.rl.ppo.policy import ResNetEncoder
@@ -94,8 +93,7 @@ def _run_batch(model, batch, stats, optim=None, lr_sched=None):
 
     if optim is not None:
         optim.zero_grad()
-        with amp.scale_loss(loss, optim) as scaled_loss:
-            scaled_loss.backward()
+        loss.backward()
 
         optim.step()
 
@@ -204,8 +202,6 @@ def main():
     optim = torch.optim.SGD(
         model.parameters(), lr=LR, momentum=0.9, nesterov=True, weight_decay=1e-4
     )
-
-    model, optim = amp.initialize(model, optim, opt_level="O2", enabled=False)
 
     lr_lambda = WarmUpSGDR(len(loaders["train"]), 40.0)
 

@@ -35,7 +35,7 @@ torch.backends.cudnn.benchmark = True
 
 
 WORLD_RANK = -1
-SLURM_JOB_ID = os.environ.get("SLURM_JOB_ID", 0)
+SLURM_JOB_ID = os.environ.get("SLURM_JOB_ID", None)
 STATE_FILE = osp.join(
     os.environ["HOME"], ".interrupted_states", "{}.pt".format(SLURM_JOB_ID)
 )
@@ -237,7 +237,7 @@ def main():
         update_start_from = 0
         prev_time = 0
 
-        if osp.exists(STATE_FILE):
+        if SLURM_JOB_ID is not None and osp.exists(STATE_FILE):
             ckpt = torch.load(STATE_FILE, map_location="cpu")
             agent.load_state_dict(
                 {k: v for k, v in ckpt["state_dict"].items() if "ddp" not in k}
@@ -832,21 +832,25 @@ def main():
                     return
 
                 if world_rank == 0:
-                    if update > 0 and update % args.logging.save_state_interval == 0:
+                    if (
+                        update > 0
+                        and (update + 1) % args.logging.save_state_interval == 0
+                    ):
                         _save_state()
 
                     # log stats
-                    if update > 0 and update % args.logging.log_interval == 0:
+                    if update > 0 and (update + 1) % args.logging.log_interval == 0:
                         logger.info(
                             "update: {}\tfps: {:.3f}".format(
-                                update, count_steps / ((time() - t_start) + prev_time)
+                                update + 1,
+                                count_steps / ((time() - t_start) + prev_time),
                             )
                         )
 
                         logger.info(
                             "update: {}\tenv-time: {:.3f}s\tinference-time: {:.3f}s\topt-time: {:.3f}s\tsync-time: {:.3f}s\tsync-frac: {:.3f}"
                             "\tframes: {}".format(
-                                update,
+                                update + 1,
                                 env_time.item(),
                                 inference_time.item(),
                                 opt_time.item(),
@@ -965,7 +969,7 @@ def main():
                             logger.info("No episodes finish in current window")
 
                     # checkpoint model
-                    if update % args.logging.checkpoint_interval == 0:
+                    if (update + 1) % args.logging.checkpoint_interval == 0:
                         checkpoint = {
                             "state_dict": {
                                 k: v

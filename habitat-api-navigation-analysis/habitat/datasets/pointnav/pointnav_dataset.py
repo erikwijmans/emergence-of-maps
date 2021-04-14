@@ -33,6 +33,9 @@ msgpack_numpy.patch()
 
 
 def _swizzle_msgpack(fname):
+    with gzip.open(fname, "rt") as f:
+        return json.load(f)
+
     base_name = osp.splitext(osp.splitext(fname)[0])[0]
     msg_pack_name = base_name + ".msg"
 
@@ -74,8 +77,8 @@ class PointNavDatasetV1(Dataset):
             content_scenes_path=dataset.content_scenes_path, dataset_dir=dataset_dir
         )
 
-    @staticmethod
-    def _get_scenes_from_folder(content_scenes_path, dataset_dir):
+    @classmethod
+    def _get_scenes_from_folder(cls, content_scenes_path, dataset_dir):
         scenes = []
         content_dir = content_scenes_path.split("{scene}")[0]
         scene_dataset_ext = content_scenes_path.split("{scene}")[1]
@@ -104,14 +107,18 @@ class PointNavDatasetV1(Dataset):
         scenes = config.POINTNAVV1.CONTENT_SCENES
         if ALL_SCENES_MASK in scenes:
             scenes = PointNavDatasetV1._get_scenes_from_folder(
-                content_scenes_path=self.content_scenes_path, dataset_dir=dataset_dir
+                content_scenes_path=self.content_scenes_path, dataset_dir=dataset_dir,
             )
 
+        last_ptr = 0
         for scene in scenes:
             scene_filename = self.content_scenes_path.format(
                 data_path=dataset_dir, scene=scene
             )
             self.from_json(_swizzle_msgpack(scene_filename))
+
+            random.shuffle(self.episodes[last_ptr:])
+            last_ptr = len(self.episodes)
 
         for ep in self.episodes:
             ep.origin_position = ep.start_position
@@ -163,7 +170,7 @@ class PointNavDatasetOTFV1(PointNavDatasetV1):
     episodes: OTFList
 
     def __init__(self, config: Config = None) -> None:
-        assert config.SPLIT in ["train", "val"]
+        assert config.SPLIT in ["train", "val", "train-2plus"]
         self._init_orientation = getattr(config.POINTNAVV1, "INIT_ORIENTATION")
         assert self._init_orientation in {"random", "spath"}
         self.episodes = []
@@ -183,6 +190,7 @@ class PointNavDatasetOTFV1(PointNavDatasetV1):
             )
 
         self.scene_paths = {}
+        self.episodes_by_scene = {}
         for scene in scenes:
             scene_filename = self.content_scenes_path.format(
                 data_path=dataset_dir, scene=scene
@@ -191,6 +199,7 @@ class PointNavDatasetOTFV1(PointNavDatasetV1):
             self.from_json(_swizzle_msgpack(scene_filename))
 
             self.scene_paths[scene] = self.episodes[0].scene_id
+            self.episodes_by_scene[scene] = self.episodes
 
         self.episodes = []
         self.episodes = PointNavDatasetOTFV1.OTFList(weakref.proxy(self))
@@ -235,7 +244,7 @@ class PointNavDatasetOTFV1(PointNavDatasetV1):
         if self._steps_taken >= self.next_shuffle:
             self.switch_scene()
 
-        ep = None
+        ep = random.choice(self.episodes_by_scene[self.current_scene])
         while ep is None:
             ep = next(
                 generate_pointnav_episode(

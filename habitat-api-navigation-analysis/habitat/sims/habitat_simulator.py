@@ -177,7 +177,7 @@ class HabitatSim(habitat.Simulator):
         sim_config = habitat_sim.SimulatorConfiguration()
         sim_config.scene.id = self.config.SCENE
         sim_config.gpu_device_id = self.config.HABITAT_SIM_V0.GPU_DEVICE_ID
-        sim_config.compress_textures = self.config.HABITAT_SIM_V0.COMPRESS_TEXTURES
+        sim_config.allow_sliding = True
         agent_config = habitat_sim.AgentConfiguration()
         overwrite_config(config_from=self._get_agent_config(), config_to=agent_config)
 

@@ -11,7 +11,6 @@
 #SBATCH --time=72:00:00
 #SBATCH --signal=USR1@300
 #SBATCH --open-mode=append
-#SBATCH --constraint=volta32gb
 #SBATCH --array=0-4
 
 echo ${PYTHONPATH}

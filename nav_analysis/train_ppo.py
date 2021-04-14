@@ -55,7 +55,8 @@ def heading_error(env, spath):
         return 0.0
 
     gt_heading = quat_from_two_vectors(
-        habitat_sim.geo.FRONT, spath.points[1] - spath.points[0]
+        habitat_sim.geo.FRONT,
+        spath.points[1] - spath.points[0] + 1e-5 * habitat_sim.geo.LEFT,
     )
 
     return angle_between_quats(env.sim.get_agent_state().rotation, gt_heading) / np.pi
@@ -133,6 +134,7 @@ class NavRLEnv(habitat.RLEnv):
         self._previous_action = None
         self._episode_distance_covered = None
         self._give_obs = self._config_env.LOOPNAV_GIVE_RETURN_OBS
+        self._heading_reward = not self._config_env.LOOPNAV_GIVE_RETURN_OBS
 
         if config_env.TASK.VERBOSE is True:
             logger.add_filehandler(os.environ.get("LOG_FILE"))
@@ -147,7 +149,8 @@ class NavRLEnv(habitat.RLEnv):
         self._previous_target_distance = self.habitat_env.current_episode.info[
             "geodesic_distance"
         ]
-        self._previous_heading_error = heading_error(self._env, self._spath())
+        if self._heading_reward:
+            self._previous_heading_error = heading_error(self._env, self._spath())
 
         if self._config_env.VERBOSE is True:
             agent_state = self._env.sim.get_agent_state()
@@ -197,11 +200,13 @@ class NavRLEnv(habitat.RLEnv):
                 (self._previous_target_distance - current_target_distance)
                 / self._env.current_episode.info["geodesic_distance"]
             )
+
         self._previous_target_distance = current_target_distance
 
-        new_heading_error = heading_error(self._env, spath)
-        reward += 0.25 * (new_heading_error - self._previous_heading_error)
-        self._previous_heading_error = new_heading_error
+        if self._heading_reward:
+            new_heading_error = heading_error(self._env, spath)
+            reward += 0.25 * (new_heading_error - self._previous_heading_error)
+            self._previous_heading_error = new_heading_error
 
         if self._episode_success():
             reward += self._config_baseline.BASELINE.RL.SUCCESS_REWARD
@@ -385,19 +390,18 @@ class LoopNavRLEnv(NavRLEnv):
         )
         self._previous_target_distance = current_target_distance
 
-        new_heading_error = heading_error(self._env, spath)
-        reward += 0.25 * (new_heading_error - self._previous_heading_error)
-        self._previous_heading_error = new_heading_error
+        if self._heading_reward:
+            new_heading_error = heading_error(self._env, spath)
+            reward += 0.25 * (new_heading_error - self._previous_heading_error)
+            self._previous_heading_error = new_heading_error
 
         if self._episode_success():
-            # TODO(akadian): multiply by second episode SPL
             reward = self._config_baseline.BASELINE.RL.SUCCESS_REWARD
         elif (
             self._previous_action == SimulatorActions.STOP.value
             and self._stages_successful[0]
             and self._episode_stage == 0
         ):
-            # TODO(akadian): multiply by first episode SPL
             reward = self._config_baseline.BASELINE.RL.SUCCESS_REWARD
 
         return reward
@@ -462,7 +466,7 @@ def make_env_fn(args, config_env, config_baseline, shuffle_interval, rank):
         env = splitnet_nav_envs.ExplorationRLEnv(config_env, dataset)
     else:
         env = NavRLEnv(
-            config_env=config_env, config_baseline=config_baseline, dataset=dataset
+            config_env=config_env, config_baseline=config_baseline, dataset=dataset,
         )
 
     env.seed(rank)
@@ -514,7 +518,7 @@ def construct_envs(
         if split == "val":
             config_env.DATASET.TYPE = "PointNav-v1"
         else:
-            config_env.DATASET.TYPE = "PointNav-v1"
+            config_env.DATASET.TYPE = "PointNavOTF-v1"
 
         if args.task.training_stage == 2:
             config_env.DATASET.TYPE = "Stage2"
@@ -800,16 +804,16 @@ def main():
         pth_time += time() - t_update_model
 
         # log stats
-        if update > 0 and update % args.log_interval == 0:
+        if update > 0 and (update + 1) % args.log_interval == 0:
             logger.info(
                 "update: {}\tfps: {:.3f}\t".format(
-                    update, count_steps / (time() - t_start)
+                    update + 1, count_steps / (time() - t_start)
                 )
             )
 
             logger.info(
                 "update: {}\tenv-time: {:.3f}s\tpth-time: {:.3f}s\t"
-                "frames: {}".format(update, env_time, pth_time, count_steps)
+                "frames: {}".format(update + 1, env_time, pth_time, count_steps)
             )
 
             window_rewards = (
@@ -840,7 +844,7 @@ def main():
                 logger.info("No episodes finish in current window")
 
         # checkpoint model
-        if update % args.checkpoint_interval == 0 and update > 0:
+        if (update + 1) % args.checkpoint_interval == 0 and update > 0:
             checkpoint = {"state_dict": agent.state_dict()}
 
             window_rewards = (

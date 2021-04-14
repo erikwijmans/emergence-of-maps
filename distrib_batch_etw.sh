@@ -40,11 +40,6 @@ ENV_NAME="gibson-public-flee-pointnav-ftune-rgb-r${SLURM_ARRAY_TASK_ID}"
 # ENV_NAME="testing"
 CHECKPOINT="data/checkpoints/transfer/${ENV_NAME}"
 
-module purge
-module load cuda/10.1
-module load cudnn/v7.6.5.32-cuda.10.1
-module load NCCL/2.5.6-1-cuda.10.1
-module load openmpi/4.0.1/gcc.7.4.0-git_patch#6654
 
 export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu/nvidia-opengl:${LD_LIBRARY_PATH}
 export GLOG_minloglevel=3
@@ -54,7 +49,7 @@ export MASTER_ADDR=$(srun --ntasks=1 hostname 2>&1 | tail -n1)
 
 printenv | grep SLURM
 set -x
-srun --mpi=pmix_v3 --kill-on-bad-exit=1 \
+srun --kill-on-bad-exit=1 \
     python -u -m nav_analysis.train_ppo_distrib \
     --extra-confs \
     nav_analysis/configs/experiments/pointnav-rgb/se-resneXt50-rgb.yaml \
@@ -66,5 +61,3 @@ srun --mpi=pmix_v3 --kill-on-bad-exit=1 \
     "logging.checkpoint_folder=${CHECKPOINT}" \
     "logging.tensorboard_dir=runs/${ENV_NAME}"
 
-    # nav_analysis/configs/experiments/loopnav/loopnav_sparse_pg_blind.yaml \
-    # nav_analysis/configs/experiments/loopnav/stage_1.yaml \

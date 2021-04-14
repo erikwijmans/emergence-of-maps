@@ -42,17 +42,22 @@ CFG_DIR = osp.join(osp.dirname(nav_analysis.__file__), "configs")
 
 
 class StreamingMean:
-    def __init__(self):
+    def __init__(self, update_fn=None):
         self._count = 0.0
         self._mean = 0.0
+        self.all_vals = []
+        self.update_fn = update_fn
 
     def add(self, v):
         if v is None:
             return
-
-        _sum = self._mean * self._count + v
-        self._count += 1.0
-        self._mean = _sum / self._count
+        if self.update_fn is None:
+            _sum = self._mean * self._count + v
+            self._count += 1.0
+            self._mean = _sum / self._count
+        else:
+            self._count, self._mean = self.update_fn(self._count, self._mean, v)
+        self.all_vals.append(v)
 
     @property
     def mean(self):
@@ -299,7 +304,7 @@ def eval_checkpoint(args, current_ckpt):
         stage_1_state = torch.load(
             trained_args.stage_2_args.stage_1_model.replace(
                 "/private/home/erikwijmans/projects/navigation-analysis-habitat/",
-                "/nethome/ewijmans3/projects/habitat-navigation-analysis/",
+                os.getcwd() + "/",
             ),
             map_location="cpu",
         )["state_dict"]
@@ -392,7 +397,7 @@ def eval_checkpoint(args, current_ckpt):
         stats_episodes = {}
         stats_means = {}
 
-        while total_episode_counts < args.count_test_episodes:
+        while total_episode_counts < args.count_test_episodes and envs.num_envs > 0:
             current_episodes = envs.current_episodes()
 
             with torch.no_grad():
@@ -698,11 +703,16 @@ class ModelEvaluator:
                             np.array(py_().values().map("success")(best_stats)) * 100.0
                         )
 
-                        print(np.mean(spls), 1.96 / np.sqrt(len(spls)) * np.std(spls))
-                        print(
-                            np.mean(success),
-                            1.96 / np.sqrt(len(success)) * np.std(success),
-                        )
+                        if len(spls):
+                            print(
+                                np.mean(spls), 1.96 / np.sqrt(len(spls)) * np.std(spls)
+                            )
+
+                        if len(success):
+                            print(
+                                np.mean(success),
+                                1.96 / np.sqrt(len(success)) * np.std(success),
+                            )
 
                         return
 
