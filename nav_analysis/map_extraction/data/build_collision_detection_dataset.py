@@ -2,6 +2,8 @@ import argparse
 
 import h5py as h5
 import numpy as np
+import collections
+import os.path as osp
 import torch
 import tqdm
 from pydash import py_
@@ -15,8 +17,8 @@ def build_parser():
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--model-path", type=str, required=True)
-    parser.add_argument("--num-val-samples", type=float, default=1e4)
-    parser.add_argument("--num-train-samples", type=float, default=1e5)
+    parser.add_argument("--num-val-samples", type=float, default=2e4)
+    parser.add_argument("--num-train-samples", type=float, default=1e6)
 
     parser.add_argument("--gpu-id", type=int, default=0)
     parser.add_argument("--num-processes", type=int, default=8)
@@ -26,9 +28,7 @@ def build_parser():
     return parser
 
 
-def main():
-    args = build_parser().parse_args()
-
+def build_h5(args):
     device = torch.device("cuda", args.gpu_id)
 
     trained_ckpt = torch.load(args.model_path, map_location=device)
@@ -41,12 +41,12 @@ def main():
     trained_args.general.video = False
     trained_args.task.shuffle_interval = int(1e3)
 
-    for split in ["train", "val"][::-1]:
+    for split in ["train", "val"][1:]:
         num_samples = getattr(args, f"num_{split}_samples")
         trained_args.task.nav_task = "pointnav"
         with construct_envs(trained_args, split, dset_measures=True) as envs, tqdm.tqdm(
             total=num_samples
-        ) as pbar:
+        ) as pbar, torch.no_grad():
             trained_args.task.nav_task = "loopnav"
             actor_critic = Policy(
                 observation_space=envs.observation_spaces[0],
@@ -92,10 +92,8 @@ def main():
             )
 
             num_samples = int(num_samples)
-            collision_labels = np.zeros((num_samples,), dtype=np.int64)
-            positions = np.zeros((num_samples, 2), dtype=np.float32)
-            goal_centric_positions = np.zeros((num_samples, 2), dtype=np.float32)
-            goal_vectors = np.zeros((num_samples, 3), dtype=np.float32)
+            collision_labels = np.zeros((num_samples,), dtype=np.bool)
+            dset_prev_actions = np.zeros((num_samples), np.int64)
             hidden_states = np.zeros(
                 (
                     num_samples,
@@ -113,14 +111,13 @@ def main():
             num_done = 0.0
             current_episodes = envs.current_episodes()
             while next_idx < num_samples:
-                with torch.no_grad():
-                    _, actions, _, _, test_recurrent_hidden_states = actor_critic.act(
-                        batch,
-                        test_recurrent_hidden_states,
-                        prev_actions,
-                        not_done_masks,
-                        deterministic=False,
-                    )
+                _, actions, _, _, test_recurrent_hidden_states = actor_critic.act(
+                    batch,
+                    test_recurrent_hidden_states,
+                    prev_actions,
+                    not_done_masks,
+                    deterministic=False,
+                )
 
                 for i in range(args.num_processes):
                     if infos is None:
@@ -139,18 +136,16 @@ def main():
                     if next_idx >= num_samples:
                         break
 
-                    if np.linalg.norm(infos[i]["ego_pose"]) < 1e-2:
+                    if np.linalg.norm(infos[i]["ego_pose"][0]) < 1e-2:
                         continue
 
                     collision_labels[next_idx] = int(
                         infos[i]["collisions"]["is_collision"]
                     )
-                    positions[next_idx] = infos[i]["ego_pose"]
-                    goal_centric_positions[next_idx] = infos[i]["goal_pose"]
-                    goal_vectors[next_idx] = batch["pointgoal"][i].cpu().numpy()
                     hidden_states[next_idx] = (
                         test_recurrent_hidden_states[:, i].cpu().view(-1).numpy()
                     )
+                    dset_prev_actions[next_idx] = prev_actions[i].item()
                     num_collisions += collision_labels[next_idx]
                     next_idx += 1
 
@@ -176,10 +171,36 @@ def main():
 
         with h5.File(f"{args.output_path}_{split}.h5", "w") as f:
             f.create_dataset("collision_labels", data=collision_labels)
-            f.create_dataset("positions", data=positions)
             f.create_dataset("hidden_states", data=hidden_states)
-            f.create_dataset("goal_vectors", data=goal_vectors)
-            f.create_dataset("goal_centric_positions", data=goal_centric_positions)
+            f.create_dataset("prev_actions", data=dset_prev_actions)
+
+
+def build_ffcv(args):
+    with h5.File(f"{args.output_path}_train.h5", "r") as f:
+        x_train = f["hidden_states"][()]
+        y_train = f["collision_labels"][()].astype(np.bool)
+
+    with h5.File(f"{args.output_path}_val.h5", "r") as f:
+        x_val = f["hidden_states"][()]
+        y_val = f["collision_labels"][()].astype(np.bool)
+
+    mean, std = np.mean(x_train, 0, keepdims=True), np.std(x_train, 0, keepdims=True)
+
+    x_train = (x_train - mean) / std
+    x_val = (x_val - mean) / std
+    x_train, y_train, x_val, y_val = map(
+        lambda t: torch.from_numpy(t), (x_train, y_train, x_val, y_val)
+    )
+
+    train_dset = torch.utils.data.TensorDataset(x_train, y_train)
+    val_dset = torch.utils.data.TensorDataset(x_val, y_val)
+
+
+def main():
+    args = build_parser().parse_args()
+    build_h5(args)
+
+    #  build_ffcv(args)
 
 
 if __name__ == "__main__":

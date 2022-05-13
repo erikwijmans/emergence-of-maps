@@ -4,11 +4,14 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+from typing import Optional, Union, Dict, List, Tuple, Any
 import argparse
 import os.path as osp
 from collections import defaultdict
+import numbers
 
 import numpy as np
+import attr
 import omegaconf
 import torch
 import torch.nn as nn
@@ -293,16 +296,55 @@ class RolloutStorage:
             )
 
 
-def _to_tensor(v):
-    if torch.is_tensor(v):
-        return v
-    elif isinstance(v, np.ndarray):
-        return torch.from_numpy(v)
-    else:
-        return torch.tensor(v, dtype=torch.float)
+@attr.s(auto_attribs=True, slots=True)
+class ObservationBatchingCache:
+    r"""Helper for batching observations that maintains a cpu-side tensor
+    that is the right size and is pinned to cuda memory
+    """
+    _pool: Dict[Any, Union[torch.Tensor, np.ndarray]] = attr.Factory(dict)
+
+    def get(
+        self,
+        num_obs: int,
+        sensor_name: str,
+        sensor: torch.Tensor,
+        device: Optional[torch.device] = None,
+    ) -> Union[torch.Tensor, np.ndarray]:
+        r"""Returns a tensor of the right size to batch num_obs observations together
+
+        If sensor is a cpu-side tensor and device is a cuda device the batched tensor will
+        be pinned to cuda memory.  If sensor is a cuda tensor, the batched tensor will also be
+        a cuda tensor
+        """
+        key = (
+            num_obs,
+            sensor_name,
+            tuple(sensor.size()),
+            sensor.type(),
+            sensor.device.type,
+            sensor.device.index,
+        )
+        if key in self._pool:
+            return self._pool[key]
+
+        cache = torch.empty(
+            num_obs, *sensor.size(), dtype=sensor.dtype, device=sensor.device
+        )
+        if device is not None and device.type == "cuda" and cache.device.type == "cpu":
+            # Pytorch indexing is slow,
+            # so convert to numpy
+            cache = cache.pin_memory().numpy()
+
+        self._pool[key] = cache
+        return cache
 
 
-def batch_obs(observations, device=None):
+@torch.no_grad()
+def batch_obs(
+    observations,
+    device: Optional[torch.device] = None,
+    cache: Optional[ObservationBatchingCache] = None,
+):
     r"""Transpose a batch of observation dicts to a dict of batched
     observations.
 
@@ -310,22 +352,75 @@ def batch_obs(observations, device=None):
         observations:  list of dicts of observations.
         device: The torch.device to put the resulting tensors on.
             Will not move the tensors if None
+        cache: An ObservationBatchingCache.  This enables faster
+            stacking of observations and cpu-gpu transfer as it
+            maintains a correctly sized tensor for the batched
+            observations that is pinned to cuda memory.
 
     Returns:
-        transposed dict of lists of observations.
+        transposed dict of torch.Tensor of observations.
     """
-    batch = defaultdict(list)
+    batch_t = dict()
+    if cache is None:
+        batch: DefaultDict[str, List] = defaultdict(list)
 
-    for obs in observations:
-        for sensor in obs:
-            batch[sensor].append(_to_tensor(obs[sensor]).to(device=device))
+    obs = observations[0]
+    # Order sensors by size, stack and move the largest first
+    sensor_names = sorted(
+        obs.keys(),
+        key=lambda name: 1
+        if isinstance(obs[name], numbers.Number)
+        else np.prod(obs[name].shape),
+        reverse=True,
+    )
 
-    for sensor in batch:
-        batch[sensor] = torch.stack(batch[sensor], dim=0).to(
-            device=device, dtype=torch.float
-        )
+    for sensor_name in sensor_names:
+        for i, obs in enumerate(observations):
+            sensor = obs[sensor_name]
+            if cache is None:
+                batch[sensor_name].append(torch.as_tensor(sensor))
+            else:
+                if sensor_name not in batch_t:
+                    batch_t[sensor_name] = cache.get(
+                        len(observations),
+                        sensor_name,
+                        torch.as_tensor(sensor),
+                        device,
+                    )
 
-    return batch
+                # Use isinstance(sensor, np.ndarray) here instead of
+                # np.asarray as this is quickier for the more common
+                # path of sensor being an np.ndarray
+                # np.asarray is ~3x slower than checking
+                if isinstance(sensor, np.ndarray):
+                    batch_t[sensor_name][i] = torch.as_tensor(sensor)
+                elif torch.is_tensor(sensor):
+                    batch_t[sensor_name][i].copy_(sensor, non_blocking=True)
+                # If the sensor wasn't a tensor, then it's some CPU side data
+                # so use a numpy array
+                else:
+                    batch_t[sensor_name][i] = np.asarray(sensor)
+
+        # With the batching cache, we use pinned mem
+        # so we can start the move to the GPU async
+        # and continue stacking other things with it
+        if cache is not None:
+            # If we were using a numpy array to do indexing and copying,
+            # convert back to torch tensor
+            # We know that batch_t[sensor_name] is either an np.ndarray
+            # or a torch.Tensor, so this is faster than torch.as_tensor
+            if isinstance(batch_t[sensor_name], np.ndarray):
+                batch_t[sensor_name] = torch.from_numpy(batch_t[sensor_name])
+
+            batch_t[sensor_name] = batch_t[sensor_name].to(device, non_blocking=True)
+
+    if cache is None:
+        for sensor in batch:
+            batch_t[sensor] = torch.stack(batch[sensor], dim=0)
+
+        batch_t = {k: v.to(device) for k, v in batch_t.items()}
+
+    return batch_t
 
 
 def ppo_args():

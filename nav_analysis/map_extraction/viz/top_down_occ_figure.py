@@ -187,9 +187,9 @@ def accuracy_and_examples(state_type):
             grid = _top_down_occ.to(device=device, dtype=torch.uint8)
 
             if state_type == "random":
-                x = torch.from_numpy(rxs[stop_idxs[0] - 1])
+                x = torch.from_numpy(rxs[stop_idxs[0] - 1].copy())
             else:
-                x = torch.from_numpy(xs[stop_idxs[0] - 1])
+                x = torch.from_numpy(xs[stop_idxs[0] - 1].copy())
 
             x = x.to(device=device, dtype=torch.float32).view(1, -1)
 
@@ -304,6 +304,7 @@ def make_examples(
 
         pred = trained_preds[ind].copy()
         gt = make_groundtruth(episodes[ind], pred.shape[0] * scaling_factor)
+        gt_full = gt.copy()
         mask = masks[ind].copy()
 
         pred[mask == 0] = 2
@@ -312,6 +313,7 @@ def make_examples(
 
         pred = scale_up_color(colorize_map(pred, color_map), scaling_factor)
         gt = colorize_map(gt, color_map)
+        gt_full = colorize_map(gt_full, color_map)
 
         err = errors[ind]
         err[mask == 0] = 3
@@ -324,6 +326,7 @@ def make_examples(
         err = scale_up_color(colorize_map(err, color_map), scaling_factor)
 
         gt = draw_path(agent_routes[ind], gt)
+        gt_full = draw_path(agent_routes[ind], gt_full)
         pred = draw_path(agent_routes[ind], pred)
 
         mask = _scale_up_binary(mask, scaling_factor)
@@ -340,6 +343,7 @@ def make_examples(
 
         imageio.imwrite("occ_figure/pred{}.png".format(num), pred)
         imageio.imwrite("occ_figure/gt{}.png".format(num), gt)
+        imageio.imwrite("occ_figure/gt_full{}.png".format(num), gt_full)
         imageio.imwrite("occ_figure/err{}.png".format(num), err)
         num += 1
 

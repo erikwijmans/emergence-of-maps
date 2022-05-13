@@ -59,8 +59,7 @@ def merge_sim_episode_config(sim_config: Config, episode: Type[Episode]) -> Any:
 
 
 class NavigationGoal:
-    """Base class for a goal specification hierarchy.
-    """
+    """Base class for a goal specification hierarchy."""
 
     position: List[float]
     radius: Optional[float]
@@ -101,8 +100,7 @@ class ObjectGoal(NavigationGoal):
 
 
 class RoomGoal(NavigationGoal):
-    """Room goal that can be specified by room_id or position with radius.
-    """
+    """Room goal that can be specified by room_id or position with radius."""
 
     room_id: str
     room_name: Optional[str]
@@ -214,18 +212,29 @@ class EpisodicGPSAndCompassSensor(habitat.Sensor):
             dtype=np.float32,
         )
 
+    def _create_obs(self, rigid_state: _SE3):
+        look_dir = np.array([0, 0, -1], dtype=np.float32)
+        heading_vector = quat_rotate_vector(rigid_state.rot, look_dir)
+
+        pos = rigid_state.trans
+
+        return np.concatenate([heading_vector, pos]).astype(np.float32)
+
     def get_observation(self, observations, episode):
         state = self._sim.get_agent_state()
         transform_world_curr = _SE3(state.rotation, state.position)
 
         transform_start_curr = episode.transform_start_world * transform_world_curr
 
-        look_dir = np.array([0, 0, -1], dtype=np.float32)
-        heading_vector = quat_rotate_vector(transform_start_curr.rot, look_dir)
+        return self._create_obs(transform_start_curr)
 
-        pos = transform_start_curr.trans
 
-        return np.concatenate([heading_vector, pos]).astype(np.float32)
+class GPSAndCompassSensor(EpisodicGPSAndCompassSensor):
+    def get_observation(self, observations, episode):
+        state = self._sim.get_agent_state()
+        transform_world_curr = _SE3(state.rotation, state.position)
+
+        return self._create_obs(transform_world_curr)
 
 
 class EpisodicCompassSensor(habitat.Sensor):
@@ -319,6 +328,7 @@ class PointGoalSensor(habitat.Sensor):
         self._goal_format = getattr(config, "GOAL_FORMAT", "CARTESIAN")
         self._sensor_type = getattr(config, "SENSOR_TYPE", "DENSE")
         self._ndims = getattr(config, "SENSOR_DIMENSIONS", 2)
+        self._coordinate_sys = getattr(config, "COORDINATE_SYSTEM", "episodic")
         assert self._goal_format in ["CARTESIAN", "POLAR"]
 
         super().__init__(config=config)
@@ -343,13 +353,17 @@ class PointGoalSensor(habitat.Sensor):
         )
 
     def get_observation(self, observations, episode):
-        if self._sensor_type == "DENSE":
-            agent_state = self._sim.get_agent_state()
-            ref_position = agent_state.position
-            rotation_world_agent = agent_state.rotation
+        if self._coordinate_sys == "episodic":
+            if self._sensor_type == "DENSE":
+                agent_state = self._sim.get_agent_state()
+                ref_position = agent_state.position
+                rotation_world_agent = agent_state.rotation
+            else:
+                ref_position = episode.origin_position
+                rotation_world_agent = quat_from_coeffs(episode.origin_rotation)
         else:
-            ref_position = episode.origin_position
-            rotation_world_agent = quat_from_coeffs(episode.origin_rotation)
+            ref_position = np.array([0, 0, 0], dtype=np.float32)
+            rotation_world_agent = quat_from_coeffs([0, 0, 0, 1])
 
         direction_vector = (
             np.array(episode.goals[0].position, dtype=np.float32) - ref_position
@@ -372,7 +386,20 @@ class PointGoalSensor(habitat.Sensor):
             else:
                 direction_vector_agent = np.array([0, 1, 0], dtype=np.float32)
 
-        return direction_vector_agent
+        return direction_vector_agent.astype(np.float32)
+
+
+class PointGoalSensorWithGPSCompass(PointGoalSensor):
+    def __init__(self, sim: Simulator, config: Config):
+        super().__init__(sim, config)
+
+        self._goal_format = "POLAR"
+        self._sensor_type = "DENSE"
+        self._ndims = 2
+        assert self._goal_format in ["CARTESIAN", "POLAR"]
+
+    def _get_uuid(self, *args: Any, **kwargs: Any):
+        return "pointgoal_with_gps_compass"
 
 
 class StaticPointGoalSensor(habitat.Sensor):
@@ -971,7 +998,8 @@ class GeoDistances(habitat.Measure):
         self.update_metric(episode, None)
 
         self._metric["initial_geo_to_goal"] = self._sim.geodesic_distance(
-            self._start_pos, self._goal_pos,
+            self._start_pos,
+            self._goal_pos,
         )
         self._metric["initial_l2_to_goal"] = np.linalg.norm(
             self._goal_pos - self._start_pos
@@ -1034,8 +1062,7 @@ class Collisions(habitat.Measure):
 
 
 class TopDownOccupancyGrid(habitat.Measure):
-    """Top Down Map measure
-    """
+    """Top Down Map measure"""
 
     def __init__(self, sim: Simulator, config: Config):
         self._sim = sim
@@ -1084,8 +1111,7 @@ class TopDownOccupancyGrid(habitat.Measure):
 
 
 class TopDownMap(habitat.Measure):
-    """Top Down Map measure
-    """
+    """Top Down Map measure"""
 
     def __init__(self, sim: Simulator, config: Config):
         self._sim = sim
@@ -1180,6 +1206,7 @@ class TopDownMap(habitat.Measure):
             self._map_resolution,
         )
         self._previous_xy_location = (a_y, a_x)
+        self._prev_agent_location = np.array([agent_position[0], agent_position[2]])
 
     def update_metric(self, episode, action):
         self._step_count += 1
@@ -1229,15 +1256,23 @@ class TopDownMap(habitat.Measure):
         color = int(color)
 
         thickness = int(np.round(self._map_resolution[0] * 2 / MAP_THICKNESS_SCALAR))
-        cv2.line(
-            self._top_down_map,
-            self._previous_xy_location,
-            (a_y, a_x),
-            color,
-            thickness=thickness,
-        )
+        if (
+            np.linalg.norm(
+                np.array([agent_position[0], agent_position[2]])
+                - self._prev_agent_location
+            )
+            < 1.0
+        ):
+            cv2.line(
+                self._top_down_map,
+                self._previous_xy_location,
+                (a_y, a_x),
+                color,
+                thickness=thickness,
+            )
 
         self._previous_xy_location = (a_y, a_x)
+        self._prev_agent_location = np.array([agent_position[0], agent_position[2]])
         return self._top_down_map, a_x, a_y
 
 

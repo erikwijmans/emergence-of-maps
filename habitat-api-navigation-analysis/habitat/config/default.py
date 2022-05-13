@@ -40,6 +40,12 @@ _C.TASK.POINTGOAL_SENSOR = CN()
 _C.TASK.POINTGOAL_SENSOR.TYPE = "PointGoalSensor"
 _C.TASK.POINTGOAL_SENSOR.GOAL_FORMAT = "POLAR"
 _C.TASK.POINTGOAL_SENSOR.SENSOR_TYPE = "DENSE"
+_C.TASK.POINTGOAL_SENSOR.COORDINATE_SYSTEM = "episodic"
+# -----------------------------------------------------------------------------
+# # POINTGOAL_WITH_GPS_COMPASS SENSOR
+# -----------------------------------------------------------------------------
+_C.TASK.POINTGOAL_WITH_GPS_COMPASS = CN()
+_C.TASK.POINTGOAL_WITH_GPS_COMPASS.TYPE = "PointGoalSensorWithGPSCompass"
 # -----------------------------------------------------------------------------
 # # HEADING SENSOR
 # -----------------------------------------------------------------------------
@@ -61,6 +67,8 @@ _C.TASK.PROXIMITY_SENSOR.MAX_DETECTION_RADIUS = 2.0
 # -----------------------------------------------------------------------------
 _C.TASK.EPO_GPS_AND_COMPASS = CN()
 _C.TASK.EPO_GPS_AND_COMPASS.TYPE = "EpisodicGPSAndCompassSensor"
+_C.TASK.GPS_AND_COMPASS = CN()
+_C.TASK.GPS_AND_COMPASS.TYPE = "GPSAndCompassSensor"
 # -----------------------------------------------------------------------------
 # # PROXIMITY SENSOR
 # -----------------------------------------------------------------------------

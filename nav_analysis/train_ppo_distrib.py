@@ -24,6 +24,7 @@ from nav_analysis.rl.ppo.ant_policy import AntPolicy
 from nav_analysis.rl.ppo.two_agent_policy import TwoAgentPolicy
 from nav_analysis.rl.ppo.memory_limited_policy import MemoryLimitedPolicy
 from nav_analysis.rl.ppo.utils import (
+    ObservationBatchingCache,
     batch_obs,
     ppo_args,
     update_linear_schedule,
@@ -31,7 +32,7 @@ from nav_analysis.rl.ppo.utils import (
 from nav_analysis.train_ppo import construct_envs
 
 torch.backends.cudnn.enabled = True
-torch.backends.cudnn.benchmark = True
+torch.backends.cudnn.benchmark = False
 
 
 WORLD_RANK = -1
@@ -131,7 +132,7 @@ def main():
     if WORLD_RANK == 0:
         logger.add_filehandler(output_log_file)
 
-    with construct_envs(args) as envs:
+    with construct_envs(args, split=args.task.split) as envs:
 
         num_recurrent_layers = args.model.num_recurrent_layers
         policy_kwargs = dict(
@@ -229,10 +230,10 @@ def main():
         )
 
         sync_time = 0
-        opt_time = torch.tensor(0.0, device=device, dtype=torch.float32)
-        env_time = torch.tensor(0.0, device=device, dtype=torch.float32)
-        inference_time = torch.tensor(0.0, device=device, dtype=torch.float32)
-        count_steps = torch.tensor(0, device=device, dtype=torch.int64)
+        opt_time = torch.tensor(0.0, device="cpu", dtype=torch.float32)
+        env_time = torch.tensor(0.0, device="cpu", dtype=torch.float32)
+        inference_time = torch.tensor(0.0, device="cpu", dtype=torch.float32)
+        count_steps = torch.tensor(0, device="cpu", dtype=torch.int64)
         count_checkpoints = 0
         update_start_from = 0
         prev_time = 0
@@ -294,33 +295,34 @@ def main():
 
         observations = envs.reset()
 
-        batch = batch_obs(observations, device)
+        batching_cache = ObservationBatchingCache()
+        batch = batch_obs(observations, device, batching_cache)
         for sensor in rollouts.observations:
             rollouts.observations[sensor][0].copy_(batch[sensor])
 
         observations = None
         batch = None
 
-        episode_rewards = torch.zeros(envs.num_envs, 1).to(device)
-        episode_counts = torch.zeros(envs.num_envs, 1).to(device)
-        current_episode_reward = torch.zeros(envs.num_envs, 1).to(device)
+        episode_rewards = torch.zeros(envs.num_envs, 1)
+        episode_counts = torch.zeros(envs.num_envs, 1)
+        current_episode_reward = torch.zeros(envs.num_envs, 1)
 
         window_episode_reward = deque(maxlen=args.logging.reward_window_size)
         window_episode_counts = deque(maxlen=args.logging.reward_window_size)
 
         if args.task.nav_task == "pointnav":
-            episode_spls = torch.zeros(envs.num_envs, 1).to(device)
-            episode_successes = torch.zeros(envs.num_envs, 1).to(device)
+            episode_spls = torch.zeros(envs.num_envs, 1)
+            episode_successes = torch.zeros(envs.num_envs, 1)
 
             window_episode_spl = deque(maxlen=args.logging.reward_window_size)
             window_episode_successes = deque(maxlen=args.logging.reward_window_size)
         elif args.task.nav_task in ["loopnav", "teleportnav"]:
-            episode_successes = torch.zeros(envs.num_envs, 1).to(device)
-            episode_spls = torch.zeros(envs.num_envs, 1).to(device)
-            episode_stage_1_spls = torch.zeros(envs.num_envs, 1).to(device)
-            episode_stage_2_spls = torch.zeros(envs.num_envs, 1).to(device)
-            episode_stage_1_d_deltas = torch.zeros(envs.num_envs, 1).to(device)
-            episode_stage_2_d_deltas = torch.zeros(envs.num_envs, 1).to(device)
+            episode_successes = torch.zeros(envs.num_envs, 1)
+            episode_spls = torch.zeros(envs.num_envs, 1)
+            episode_stage_1_spls = torch.zeros(envs.num_envs, 1)
+            episode_stage_2_spls = torch.zeros(envs.num_envs, 1)
+            episode_stage_1_d_deltas = torch.zeros(envs.num_envs, 1)
+            episode_stage_2_d_deltas = torch.zeros(envs.num_envs, 1)
 
             window_episode_spl = deque(maxlen=args.logging.reward_window_size)
             window_episode_successes = deque(maxlen=args.logging.reward_window_size)
@@ -333,11 +335,11 @@ def main():
                 maxlen=args.logging.reward_window_size
             )
         elif args.task.nav_task == "flee":
-            episode_flee_dist = torch.zeros(envs.num_envs, 1, device=device)
+            episode_flee_dist = torch.zeros(envs.num_envs, 1)
 
             window_episode_flee_dist = deque(maxlen=args.logging.reward_window_size)
         elif args.task.nav_task == "explore":
-            episode_explore_amount = torch.zeros(envs.num_envs, 1, device=device)
+            episode_explore_amount = torch.zeros(envs.num_envs, 1)
 
             window_episode_explore_amount = deque(
                 maxlen=args.logging.reward_window_size
@@ -413,19 +415,19 @@ def main():
 
                     env_time = env_time + (time() - t_step_env)
 
-                    batch = batch_obs(observations, device)
-                    rewards = torch.tensor(rewards, dtype=torch.float, device=device)
+                    batch = batch_obs(observations, device, batching_cache)
+                    rewards = torch.tensor(rewards, dtype=torch.float, device="cpu")
                     rewards = rewards.unsqueeze(1)
 
                     masks = torch.tensor(
                         [[0.0] if done else [1.0] for done in dones],
                         dtype=torch.float,
-                        device=device,
+                        device="cpu",
                     )
 
                     current_episode_reward.copy_(current_episode_reward + rewards)
-                    with torch.no_grad():
-                        agent.reward_whitten.update(current_episode_reward)
+                    #  with torch.no_grad():
+                    #  agent.reward_whitten.update(current_episode_reward)
 
                     episode_rewards += (1.0 - masks) * current_episode_reward
                     episode_counts += 1.0 - masks
@@ -439,7 +441,7 @@ def main():
                                 for info, done in zip(infos, dones)
                             ],
                             dtype=torch.float,
-                            device=device,
+                            device="cpu",
                         )
                         episode_successes += torch.tensor(
                             [
@@ -447,7 +449,7 @@ def main():
                                 for info, done in zip(infos, dones)
                             ],
                             dtype=torch.float,
-                            device=device,
+                            device="cpu",
                         )
                     elif args.task.nav_task in ["loopnav", "teleportnav"]:
                         key_spl = "loop_spl"
@@ -457,7 +459,7 @@ def main():
                                 for info, done in zip(infos, dones)
                             ],
                             dtype=torch.float,
-                            device=device,
+                            device="cpu",
                         )
                         episode_successes += torch.tensor(
                             [
@@ -467,7 +469,7 @@ def main():
                                 for info, done in zip(infos, dones)
                             ],
                             dtype=torch.float,
-                            device=device,
+                            device="cpu",
                         )
 
                         episode_stage_1_spls += torch.tensor(
@@ -476,7 +478,7 @@ def main():
                                 for info, done in zip(infos, dones)
                             ],
                             dtype=torch.float,
-                            device=device,
+                            device="cpu",
                         )
                         episode_stage_2_spls += torch.tensor(
                             [
@@ -484,7 +486,7 @@ def main():
                                 for info, done in zip(infos, dones)
                             ],
                             dtype=torch.float,
-                            device=device,
+                            device="cpu",
                         )
 
                         episode_stage_1_d_deltas += torch.tensor(
@@ -493,7 +495,7 @@ def main():
                                 for info, done in zip(infos, dones)
                             ],
                             dtype=torch.float,
-                            device=device,
+                            device="cpu",
                         )
 
                         episode_stage_2_d_deltas += torch.tensor(
@@ -502,7 +504,7 @@ def main():
                                 for info, done in zip(infos, dones)
                             ],
                             dtype=torch.float,
-                            device=device,
+                            device="cpu",
                         )
                     elif args.task.nav_task == "flee":
                         episode_flee_dist += torch.tensor(
@@ -511,7 +513,7 @@ def main():
                                 for info, done in zip(infos, dones)
                             ],
                             dtype=torch.float,
-                            device=device,
+                            device="cpu",
                         )
                     elif args.task.nav_task == "explore":
                         episode_explore_amount += torch.tensor(
@@ -520,7 +522,7 @@ def main():
                                 for info, done in zip(infos, dones)
                             ],
                             dtype=torch.float,
-                            device=device,
+                            device="cpu",
                         )
 
                     #  rewards = torch.clamp(
@@ -568,10 +570,6 @@ def main():
                 #  rollout_lens.append(rollout_length.cpu().byte())
                 #  rollout_lens = []
 
-                step_delta = torch.full_like(count_steps, rollouts.step * envs.num_envs)
-                dist.all_reduce(step_delta)
-                count_steps += step_delta
-
                 t_update_model = time()
                 with torch.no_grad():
                     last_observation = {
@@ -596,14 +594,20 @@ def main():
                     actor_critic.net.running_mean_and_var.eval()
 
                 value_loss, action_loss, dist_entropy = agent.update(rollouts)
-                agent.reward_whitten.sync()
+                #  agent.reward_whitten.sync()
 
                 losses = torch.tensor(
-                    [value_loss, action_loss, dist_entropy],
+                    [
+                        value_loss,
+                        action_loss,
+                        dist_entropy,
+                        rollouts.step * envs.num_envs,
+                    ],
                     device=device,
                     dtype=torch.float32,
                 )
                 dist.all_reduce(losses)
+                count_steps += losses[-1].to(device="cpu", dtype=count_steps.dtype)
                 losses /= world_size
 
                 rollouts.after_update()
@@ -648,7 +652,9 @@ def main():
                 else:
                     stats = torch.cat([episode_rewards, episode_counts], 1)
 
+                stats = stats.to(device)
                 dist.all_reduce(stats)
+                stats = stats.cpu()
 
                 if args.task.nav_task == "pointnav":
                     window_episode_reward.append(stats[:, 0])

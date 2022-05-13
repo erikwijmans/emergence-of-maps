@@ -35,6 +35,7 @@ from nav_analysis.rl.ppo.two_agent_policy import TwoAgentPolicy
 from nav_analysis.rl.ppo.memory_limited_policy import MemoryLimitedPolicy
 from nav_analysis.rl.ppo.utils import batch_obs
 from nav_analysis.rl.rnn_memory_buffer import RNNMemoryBuffer
+from nav_analysis.utils import radar
 from nav_analysis.train_ppo import LoopNavRLEnv, NavRLEnv, ObsStackEnv
 
 
@@ -107,7 +108,7 @@ def val_env_fn(args, task, config_env, config_baseline, rank):
 def images_to_video(images, output_dir, video_name):
     video_name = video_name.replace(" ", "_").replace("\n", "_") + ".mp4"
     writer = imageio.get_writer(os.path.join(output_dir, video_name), fps=10)
-    for im in tqdm.tqdm(images):
+    for im in tqdm.tqdm(images, leave=False):
         writer.append_data(im)
     writer.close()
     logger.info("Generated video: {}".format(os.path.join(output_dir, video_name)))
@@ -128,13 +129,13 @@ def poll_checkpoint_folder(checkpoint_folder, previous_ckpt_ind, exit_immediatel
     return "done" if exit_immediately else None
 
 
-def construct_val_envs(args):
+def construct_val_envs(args, split):
     env_configs = []
     baseline_configs = []
 
     basic_config = get_config(config_file=args.task.task_config, config_dir=CFG_DIR)
     basic_config.defrost()
-    basic_config.DATASET.SPLIT = "val"
+    basic_config.DATASET.SPLIT = split
     basic_config.freeze()
 
     scenes = PointNavDatasetV1.get_scenes_to_load(basic_config.DATASET)
@@ -155,7 +156,7 @@ def construct_val_envs(args):
         config_env = get_config(config_file=args.task.task_config, config_dir=CFG_DIR)
         config_env.defrost()
 
-        config_env.DATASET.SPLIT = "val"
+        config_env.DATASET.SPLIT = split
         config_env.DATASET.POINTNAVV1.CONTENT_SCENES = scene_splits[i]
 
         config_env.SIMULATOR.HABITAT_SIM_V0.GPU_DEVICE_ID = sim_gpus[i % len(sim_gpus)]
@@ -208,6 +209,7 @@ def construct_val_envs(args):
         if args.general.video:
             config_env.TASK.MEASUREMENTS.append("TOP_DOWN_MAP")
             config_env.TASK.MEASUREMENTS.append("COLLISIONS")
+            config_env.TASK.SENSORS.append("POINTGOAL_WITH_GPS_COMPASS")
             config_env.SIMULATOR.RGB_SENSOR.WIDTH = 1024
             config_env.SIMULATOR.RGB_SENSOR.HEIGHT = 1024
 
@@ -255,6 +257,7 @@ def construct_val_envs(args):
 def eval_checkpoint(args, current_ckpt):
     if args.video == 1:
         rgb_frames = [[] for _ in range(args.num_processes)]
+        extra_infos = [[] for _ in range(args.num_processes)]
         if not os.path.exists(args.out_dir_video):
             os.makedirs(args.out_dir_video)
     else:
@@ -280,7 +283,7 @@ def eval_checkpoint(args, current_ckpt):
     elif trained_args.task.nav_task in {"loopnav", "teleportnav"}:
         key_spl = "loop_spl"
 
-    envs = construct_val_envs(trained_args)
+    envs = construct_val_envs(trained_args, args.split)
 
     policy_kwargs = dict(
         observation_space=envs.observation_spaces[0],
@@ -392,6 +395,7 @@ def eval_checkpoint(args, current_ckpt):
 
     rnn_memory_buffer.gt_hidden = test_recurrent_hidden_states.clone()
 
+    infos = None
     with tqdm.tqdm(total=args.count_test_episodes, ncols=0) as pbar:
         total_episode_counts = 0
         stats_episodes = {}
@@ -417,8 +421,11 @@ def eval_checkpoint(args, current_ckpt):
 
                 prev_actions.copy_(actions)
 
+                actions = actions.cpu()
+
             outputs = envs.step([a[0].item() for a in actions])
 
+            last_infos = infos
             observations, rewards, dones, infos = [list(x) for x in zip(*outputs)]
             batch = batch_obs(observations, device)
 
@@ -514,27 +521,70 @@ def eval_checkpoint(args, current_ckpt):
                                 )[0],
                                 current_episodes[i].info["geodesic_distance"],
                                 infos[i][key_spl]["stage_1_spl"],
-                                infos[i][key_spl]["stage_2_spl"],
+                                infos[i][key_spl]["stage_2_spl"] or 0.0,
                                 infos[i]["loop_d_delta"]["stage_1"],
-                                infos[i]["loop_d_delta"]["stage_2"],
+                                infos[i]["loop_d_delta"]["stage_2"] or 1.0,
                                 len(rgb_frames[i]) + 1,
                             )
                         else:
                             video_name = "{}_{}_{}_{:.2f}".format(
                                 current_episodes[i].episode_id,
-                                "apt",
+                                osp.splitext(
+                                    osp.basename(current_episodes[i].scene_id)
+                                )[0],
                                 key_spl,
                                 infos[i][key_spl],
                             )
 
                         images_to_video(rgb_frames[i], args.out_dir_video, video_name)
+                        top_down_map = last_infos[i]["top_down_map"]["map"]
+                        video_name = video_name.replace(" ", "_").replace("\n", "_")
+                        map_name = video_name + ".npy"
+                        np.save(
+                            osp.join(args.out_dir_video, map_name),
+                            top_down_map,
+                            allow_pickle=False,
+                        )
+                        extra_name = video_name + "_extra.npz"
+                        np.savez_compressed(
+                            osp.join(args.out_dir_video, extra_name),
+                            **{
+                                k: np.stack([v[k] for v in extra_infos[i]], 0)
+                                for k in extra_infos[i][0].keys()
+                            }
+                        )
+
                         rgb_frames[i] = []
+                        extra_infos[i] = []
 
                 elif args.video == 1:
                     # episode continuing, record frames
+                    extra_infos[i].append(
+                        dict(
+                            hidden_states=test_recurrent_hidden_states[:, i]
+                            .cpu()
+                            .view(-1)
+                            .numpy(),
+                            raw_rgb=observations[i]["rgb"].copy(),
+                            collision=np.array(
+                                [infos[i]["collisions"]["is_collision"]]
+                            ),
+                            action=actions[i].cpu().numpy(),
+                        )
+                    )
                     size = observations[i]["rgb"].shape[0]
                     frame = np.empty((size, 2 * size, 3), dtype=np.uint8)
-                    frame[:, :size] = observations[i]["rgb"][:, :, :3]
+                    rgb = observations[i]["rgb"][..., :3]
+                    pg = observations[i]["pointgoal_with_gps_compass"]
+
+                    radar.draw_goal_radar(
+                        pg,
+                        rgb,
+                        radar.Rect(0, 0, int(size / 4), int(size / 4)),
+                        start_angle=0,
+                        fov=90,
+                    )
+                    frame[:, :size] = rgb
 
                     if infos[i]["collisions"]["is_collision"]:
                         frame[:, 1024:] = [0, 0, 0]
@@ -598,6 +648,7 @@ def eval_checkpoint(args, current_ckpt):
 
                 if args.video == 1:
                     rgb_frames = [rgb_frames[idx] for idx in state_index]
+                    extra_infos = [extra_infos[idx] for idx in state_index]
 
             def _avg(k):
                 return stats_means[k].mean if k in stats_means else 0.0
@@ -659,6 +710,7 @@ class ModelEvaluator:
         parser.add_argument("--max-memory-length", type=int, default=None)
         parser.add_argument("--eval-task-config", type=str, required=True)
         parser.add_argument("--exit-immediately", action="store_true")
+        parser.add_argument("--split", type=str, default="val")
 
         return parser
 

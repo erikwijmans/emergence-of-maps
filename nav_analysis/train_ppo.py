@@ -489,6 +489,7 @@ def construct_envs(
         basic_config.defrost()
         basic_config.DATASET.SPLIT = split
         basic_config.freeze()
+        print(basic_config.DATASET)
         scenes = PointNavDatasetV1.get_scenes_to_load(basic_config.DATASET)
 
     random.shuffle(scenes)
@@ -583,8 +584,8 @@ def construct_envs(
                         "EGO_POSE",
                         "GOAL_POSE",
                         "COLLISIONS",
-                        "TOP_DOWN_OCCUPANCY_GRID",
-                        "GEO_DISTANCES",
+                        #  "TOP_DOWN_OCCUPANCY_GRID",
+                        #  "GEO_DISTANCES",
                     ]
                 )
             )

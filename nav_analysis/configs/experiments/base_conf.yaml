@@ -82,6 +82,8 @@ task:
 
     training_stage: -1
 
+    split: train
+
 
 stage_2_args:
     stage_1_model: ???

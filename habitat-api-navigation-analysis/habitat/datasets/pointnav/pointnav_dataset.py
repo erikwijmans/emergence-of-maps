@@ -170,7 +170,7 @@ class PointNavDatasetOTFV1(PointNavDatasetV1):
     episodes: OTFList
 
     def __init__(self, config: Config = None) -> None:
-        assert config.SPLIT in ["train", "val", "train-2plus"]
+        #  assert config.SPLIT in ["train", "val", "train-2plus"]
         self._init_orientation = getattr(config.POINTNAVV1, "INIT_ORIENTATION")
         assert self._init_orientation in {"random", "spath"}
         self.episodes = []
