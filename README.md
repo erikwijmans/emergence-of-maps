@@ -1,4 +1,4 @@
-# Blind Artificial Navigation Agents Take Shortcuts and Build Cognitive Maps
+Emergence of Maps in the Memories of Blind Navigation Agents
 
 ## Setup
 
@@ -16,10 +16,10 @@ conda env create -f environment.yml
 ```
 
 
-Add habitat to PYTHONPATH
+Add habitat API to PYTHONPATH
 
 ```
-export PYTHONPATH=$(pwd)/habitat-api-navigation-analysis:${PYTHONPATH}
+export PYTHONPATH=$(pwd)/habitat-api-emergence-of-maps:${PYTHONPATH}
 ```
 
 
@@ -150,8 +150,6 @@ python -u -m nav_analysis.map_extraction.training.train_position_predictor \
 ```
 
 This should take a few minutes and reach a best val L2 error of less than 0.2
-
-## Full data
 
 
 We will provide the full data at publication.
