@@ -76,6 +76,9 @@ class DotDict(dict):
 
 
 def val_env_fn(args, task, config_env, config_baseline, rank):
+    random.seed(rank)
+    np.random.seed(rank)
+    torch.manual_seed(rank)
     dataset = make_dataset(config_env.DATASET.TYPE, config=config_env.DATASET)
     config_env.defrost()
     config_env.SIMULATOR.SCENE = dataset.episodes[0].scene_id
@@ -112,6 +115,8 @@ def images_to_video(images, output_dir, video_name):
         writer.append_data(im)
     writer.close()
     logger.info("Generated video: {}".format(os.path.join(output_dir, video_name)))
+
+    return video_name
 
 
 def poll_checkpoint_folder(checkpoint_folder, previous_ckpt_ind, exit_immediately):
