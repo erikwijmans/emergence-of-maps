@@ -185,6 +185,3 @@ python -u -m nav_analysis.map_extraction.training.train_position_predictor \
 
 This should take a few minutes and reach a best val L2 error of less than 0.2
 
-
-We will provide the full data at publication.
-
