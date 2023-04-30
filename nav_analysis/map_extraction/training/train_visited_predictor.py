@@ -663,7 +663,7 @@ def eval_epoch(model, loader, writer, step, model_name):
     torch.save(state, model_name + "_best.pt")
 
 
-def softmax_classifier(args):
+def train_model(args):
     local_rank, _ = init_distrib_slurm()
     device = torch.device("cuda", local_rank)
     torch.cuda.set_device(device)
@@ -848,6 +848,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.eval_model is None:
-        softmax_classifier(args)
+        train_model(args)
     else:
         eval_model(args)

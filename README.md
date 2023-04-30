@@ -1,4 +1,38 @@
-Emergence of Maps in the Memories of Blind Navigation Agents
+# Emergence of Maps in the Memories of Blind Navigation Agents
+
+This repository contains the code used in our ICLR 2023 paper, Emergence of Maps in the Memories of Blind Navigation Agents.
+The intent of this repository is for documentations purposes. If you'd like to build upon our experiments, we highly suggest
+you use this repository as a reference but build upon the latest version of habitat-lab and habitat-sim. Those have both advanced and improved
+considerably since we began this work.
+
+
+## Key files
+
+* `nav_analysis/train_ppo_distrib.py` This contains the DD-PPO implementation used for training agents and probes.
+
+* `nav_analysis/rl/build_stage_2_episodes.py`. This contains the code to build the episodes for training probes. (Referred to as stage 2 episodes.)
+
+* `nav_analysis/evaluate_ppo.py`. This contains the code to evaluate agents and probes.
+
+* `nav_analysis/map_extraction/data/build_positions_dataset.py`. This contains the code to build the dataset needed to prediction agent positions and decoding maps.
+
+* `nav_analysis/map_extraction/data/build_visited_dataset.py`. This creates a cache for training the top-down visitation models and occupancy prediction models.
+
+* `nav_analysis/map_extraction/training/train_visited_predictor.py`. This trains the top-down visited and occupancy map models. The top-down visited models are for easier visualization. See `nav_analysis/map_extraction/viz/past_prediction_figure.py` for visualization of past prediction and `nav_analysis/map_extraction/viz/top_down_occ_figure.py` for a visualization of occupancy prediction.
+
+* `nav_analysis/map_extraction/training/train_position_predictor.py`. This trains the position predictors used by `nav_analysis/map_extraction/training/calibrated_position_predictor.py` and `visualizations/calibrated_position_predictor_viz.py`.
+
+* `nav_analysis/map_extraction/data_annotation` contains the web-app we used to manually annotation excursions.
+
+* `nav_analysis/map_extraction/data/build_collision_detection_dataset.py` builds a collision detection dataset. This can then be used with `nav_analysis/map_extraction/training/train_collision_detector.py` to train collision detectors.
+
+In the `launchery` folder, there are helper scripts for launching experiments. Most of these would highly benefit from parallelization depending on your cluster environment. Some are already parallelized using SLURM.
+
+## Key Terms
+
+* LoopNav. This corresponds to the T->S probe.
+
+* TeleportNav. This corresponds to the S->T probe.
 
 ## Setup
 
@@ -64,7 +98,7 @@ python -u -m nav_analysis.rl.build_stage_2_episodes \
 ```
 This should take around 5 minutes
 
-Then train a loopnav probe with
+Then train a T->S (loopnav) probe with
 ```
 python -u -m nav_analysis.train_ppo_distrib \
     --extra-confs \

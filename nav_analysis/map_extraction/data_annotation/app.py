@@ -173,7 +173,6 @@ def get_task_data():
 
 @app.route("/api/save-result", methods=["POST"])
 def save_result():
-    return jsonify(False)
     data = request.get_json()
     idx = santize_idx(int(data["idx"]))
 
